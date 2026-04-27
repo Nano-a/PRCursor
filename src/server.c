@@ -741,8 +741,32 @@ err:
         send_err(cfd);
     close(cfd);
 }
+
 int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    return 0;
+    verbose = (argc >= 2 && strcmp(argv[1], "-v") == 0);
+    int pi = 1;
+    if (verbose) pi++;
+    if (argc - pi < 2) {
+        fprintf(stderr, "usage: paroles_server [-v] [bind] port\n");
+        return 1;
+    }
+    const char *host = argv[pi];
+    uint16_t port = (uint16_t)atoi(argv[pi + 1]);
+    if (strcmp(host, "-v") == 0) {
+        fprintf(stderr, "usage error\n");
+        return 1;
+    }
+    int srv = tcp6_listen(host, port);
+    if (srv < 0) {
+        perror("listen");
+        return 1;
+    }
+    fprintf(stderr, "paroles_server ecoute [%s]:%u\n", host, (unsigned)port);
+    for (;;) {
+        struct sockaddr_in6 peer;
+        socklen_t pl = sizeof peer;
+        int c = tcp6_accept(srv, &peer, &pl);
+        if (c < 0) continue;
+        serve_client(c, &peer);
+    }
 }
