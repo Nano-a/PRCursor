@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
-/* CHRONO N°10 : objectif serveur + client IPv6 (protocole Paroles). */
+#define PAROLES_NOM_LEN 10
+#define PAROLES_CLE_LEN 113
+#define PAROLES_IP6_BIN 16
+
+/* CHRONO N°11 : étape 1 — CLE 113 octets nuls à l'inscription. */
 
 #endif
