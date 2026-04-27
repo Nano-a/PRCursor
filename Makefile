@@ -15,4 +15,10 @@ $(SRC)/wire.o: $(SRC)/wire.c $(SRC)/wire.h include/paroles_proto.h
 $(SRC)/net.o: $(SRC)/net.c $(SRC)/net.h
 clean:
 	rm -f $(SRC)/*.o $(BIN)
-.PHONY: all clean
+
+test: all
+	@chmod +x tests/smoke.sh tests/regression_codereq.sh
+	@PORT=4242 tests/smoke.sh
+	@PORT=4245 tests/regression_codereq.sh
+
+.PHONY: all clean test
