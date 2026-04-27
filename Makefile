@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -g -Iinclude
+CFLAGS = -Wall -Wextra -O2 -g -Iinclude -DPAROLES_ACCEPT_REAL_CLE_113
 LDFLAGS =
 LDLIBS = -lssl -lcrypto
 SRC = src
@@ -18,12 +18,13 @@ clean:
 	rm -f $(SRC)/*.o $(BIN)
 
 test: all
-	@chmod +x tests/smoke.sh tests/regression_codereq.sh tests/verify_codereq_implemented.sh tests/feed_order_pdf.sh tests/notif_codereq.sh tests/tls_smoke.sh scripts/gencerts.sh
+	@chmod +x tests/smoke.sh tests/regression_codereq.sh tests/verify_codereq_implemented.sh tests/feed_order_pdf.sh tests/notif_codereq.sh tests/tls_smoke.sh tests/stage3_cle_smoke.sh scripts/gencerts.sh scripts/gen_ed25519.sh
 	@tests/verify_codereq_implemented.sh
 	@PORT=4242 tests/smoke.sh
 	@PORT=4245 tests/regression_codereq.sh
 	@PORT=4246 tests/feed_order_pdf.sh
 	@PORT=4247 tests/notif_codereq.sh
 	@PORT=4248 tests/tls_smoke.sh
+	@PORT=4249 tests/stage3_cle_smoke.sh
 
 .PHONY: all clean test

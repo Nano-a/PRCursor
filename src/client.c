@@ -3,6 +3,8 @@
 #include "net.h"
 #include "wire.h"
 #include <arpa/inet.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,13 +75,42 @@ static int one_cmd(const char *host, uint16_t port, const unsigned char *msg, si
     return n;
 }
 
-static int cmd_reg(const char *host, uint16_t port, const char *name) {
+static int fill_ed25519_cle_from_pem(const char *path, unsigned char *cle) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    EVP_PKEY *pk = PEM_read_PUBKEY(f, NULL, NULL, NULL);
+    fclose(f);
+    if (!pk) return -1;
+    if (EVP_PKEY_get_id(pk) != EVP_PKEY_ED25519) {
+        EVP_PKEY_free(pk);
+        return -1;
+    }
+    unsigned char raw[32];
+    size_t len = sizeof raw;
+    if (EVP_PKEY_get_raw_public_key(pk, raw, &len) != 1 || len != 32) {
+        EVP_PKEY_free(pk);
+        return -1;
+    }
+    memset(cle, 0, (size_t)PAROLES_CLE_LEN);
+    memcpy(cle, raw, 32);
+    EVP_PKEY_free(pk);
+    return 0;
+}
+
+static int cmd_reg(const char *host, uint16_t port, const char *name, const char *pub_pem) {
     unsigned char msg[256], resp[4096];
     unsigned char *p = msg;
     wire_put_u8(&p, PAROLES_CODEREQ_REG);
     pad_nom(p, name);
     p += PAROLES_NOM_LEN;
-    wire_put_zeros(&p, PAROLES_CLE_LEN);
+    if (pub_pem) {
+        unsigned char cle[PAROLES_CLE_LEN];
+        if (fill_ed25519_cle_from_pem(pub_pem, cle) < 0) return -1;
+        memcpy(p, cle, PAROLES_CLE_LEN);
+        p += PAROLES_CLE_LEN;
+    } else {
+        wire_put_zeros(&p, PAROLES_CLE_LEN);
+    }
     int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1 + 4 + 2 + PAROLES_CLE_LEN) return -1;
     const unsigned char *q = resp;
@@ -297,7 +328,7 @@ static int cmd_feed(const char *host, uint16_t port, uint32_t uid, uint32_t idg,
 static void usage(void) {
     fprintf(stderr,
             "usage: paroles_client [-v] [--tls ca.pem] host port cmd [args]\n"
-            "  reg <nom>\n"
+            "  reg <nom> [pub_ed25519.pem]\n"
             "  newgroup <uid> <nom>\n"
             "  invite <admin> <idg> <uid> ...\n"
             "  listinv <uid>\n"
@@ -340,7 +371,14 @@ int main(int argc, char **argv) {
             tls_atexit_done = 1;
         }
     }
-    if (!strcmp(cmd, "reg")) return cmd_reg(host, port, argv[i]) < 0 ? 1 : 0;
+    if (!strcmp(cmd, "reg")) {
+        if (argc - i < 1) {
+            usage();
+            return 1;
+        }
+        const char *ppem = (argc - i >= 2) ? argv[i + 1] : NULL;
+        return cmd_reg(host, port, argv[i], ppem) < 0 ? 1 : 0;
+    }
     if (!strcmp(cmd, "newgroup"))
         return cmd_newgroup(host, port, (uint32_t)atoi(argv[i]), argv[i + 1]) < 0 ? 1 : 0;
     if (!strcmp(cmd, "invite")) {
