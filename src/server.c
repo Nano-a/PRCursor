@@ -576,6 +576,90 @@ static int handle_feed(int fd, uint32_t uid, const unsigned char *body, size_t b
     free(out);
     return r;
 }
+
+static int dispatch(int fd, struct sockaddr_in6 *peer, uint8_t code, const unsigned char *body,
+                    size_t blen) {
+    switch (code) {
+    case PAROLES_CODEREQ_REG:
+        return handle_reg(fd, peer, body, blen);
+    case PAROLES_CODEREQ_NEW_GROUP:
+        if (blen < 4) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            return handle_new_group(fd, uid, q, left);
+        }
+    case PAROLES_CODEREQ_INVITE:
+        if (blen < 12) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            return handle_invite(fd, uid, q, left);
+        }
+    case PAROLES_CODEREQ_LIST_INV:
+        if (blen != 4) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            return handle_list_inv(fd, uid, q, left);
+        }
+    case PAROLES_CODEREQ_INV_ANS:
+        if (blen != 4 + 4 + 1) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            return handle_inv_ans(fd, uid, q, left);
+        }
+    case PAROLES_CODEREQ_LIST_MEM:
+        if (blen < 8) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid, idg;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            if (wire_get_u32_be(&q, &left, &idg) < 0) return -1;
+            if (left) return -1;
+            return handle_list_mem(fd, uid, idg);
+        }
+    case PAROLES_CODEREQ_POST:
+        if (blen < 4) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            return handle_post(fd, uid, q, left);
+        }
+    case PAROLES_CODEREQ_REPLY:
+        if (blen < 4) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            return handle_reply(fd, uid, q, left);
+        }
+    case PAROLES_CODEREQ_FEED:
+        if (blen < 4) return -1;
+        {
+            const unsigned char *q = body;
+            size_t left = blen;
+            uint32_t uid;
+            if (wire_get_u32_be(&q, &left, &uid) < 0) return -1;
+            return handle_feed(fd, uid, q, left);
+        }
+    default:
+        return -1;
+    }
+}
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
