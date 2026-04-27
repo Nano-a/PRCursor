@@ -254,8 +254,75 @@ static int cmd_feed(const char *host, uint16_t port, uint32_t uid, uint32_t idg,
     }
     return 0;
 }
+
+static void usage(void) {
+    fprintf(stderr,
+            "usage: paroles_client [-v] host port cmd [args]\n"
+            "  reg <nom>\n"
+            "  newgroup <uid> <nom>\n"
+            "  invite <admin> <idg> <uid> ...\n"
+            "  listinv <uid>\n"
+            "  ans <uid> <idg> <0|1|2>\n"
+            "  listmem <uid> <idg>\n"
+            "  post <uid> <idg> <texte>\n"
+            "  reply <uid> <idg> <numb> <texte>\n"
+            "  feed <uid> <idg> <numb> <numr>\n");
+}
+
 int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    return 0;
+    int i = 1;
+    verbose = 0;
+    if (argc > 1 && strcmp(argv[1], "-v") == 0) {
+        verbose = 1;
+        i++;
+    }
+    if (argc - i < 3) {
+        usage();
+        return 1;
+    }
+    const char *host = argv[i++];
+    uint16_t port = (uint16_t)atoi(argv[i++]);
+    const char *cmd = argv[i++];
+    if (!strcmp(cmd, "reg"))
+        return cmd_reg(host, port, argv[i]) < 0 ? 1 : 0;
+    if (!strcmp(cmd, "newgroup"))
+        return cmd_newgroup(host, port, (uint32_t)atoi(argv[i]), argv[i + 1]) < 0 ? 1 : 0;
+    if (!strcmp(cmd, "invite")) {
+        uint32_t ad = (uint32_t)atoi(argv[i++]);
+        uint32_t idg = (uint32_t)atoi(argv[i++]);
+        int n = argc - i;
+        uint32_t *ids = malloc(sizeof(uint32_t) * (size_t)n);
+        for (int k = 0; k < n; k++) ids[k] = (uint32_t)atoi(argv[i + k]);
+        int r = cmd_invite(host, port, ad, idg, n, ids);
+        free(ids);
+        return r < 0 ? 1 : 0;
+    }
+    if (!strcmp(cmd, "listinv"))
+        return cmd_listinv(host, port, (uint32_t)atoi(argv[i])) < 0 ? 1 : 0;
+    if (!strcmp(cmd, "ans"))
+        return cmd_ans(host, port, (uint32_t)atoi(argv[i]), (uint32_t)atoi(argv[i + 1]),
+                        atoi(argv[i + 2])) < 0
+                   ? 1
+                   : 0;
+    if (!strcmp(cmd, "listmem"))
+        return cmd_listmem(host, port, (uint32_t)atoi(argv[i]), (uint32_t)atoi(argv[i + 1])) < 0
+                   ? 1
+                   : 0;
+    if (!strcmp(cmd, "post"))
+        return cmd_post(host, port, (uint32_t)atoi(argv[i]), (uint32_t)atoi(argv[i + 1]),
+                        argv[i + 2]) < 0
+                   ? 1
+                   : 0;
+    if (!strcmp(cmd, "reply"))
+        return cmd_reply(host, port, (uint32_t)atoi(argv[i]), (uint32_t)atoi(argv[i + 1]),
+                         (uint32_t)atoi(argv[i + 2]), argv[i + 3]) < 0
+                   ? 1
+                   : 0;
+    if (!strcmp(cmd, "feed"))
+        return cmd_feed(host, port, (uint32_t)atoi(argv[i]), (uint32_t)atoi(argv[i + 1]),
+                        (uint32_t)atoi(argv[i + 2]), (uint32_t)atoi(argv[i + 3])) < 0
+                   ? 1
+                   : 0;
+    usage();
+    return 1;
 }
