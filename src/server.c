@@ -207,6 +207,41 @@ static Post *find_post(Group *g, uint32_t numb) {
         if (g->posts[i].numb == numb) return &g->posts[i];
     return NULL;
 }
+
+static void close_group(Group *g) {
+    if (g->closed) return;
+    g->closed = 1;
+    notif_mcast(g, PAROLES_NOTIF_CLOSE);
+}
+
+static int handle_reg(int fd, struct sockaddr_in6 *peer, const unsigned char *body, size_t blen) {
+    if (blen != PAROLES_NOM_LEN + PAROLES_CLE_LEN) return -1;
+    if (!cle_is_zero(body + PAROLES_NOM_LEN)) return -1;
+    int slot = -1;
+    for (int i = 0; i < MAX_USERS; i++)
+        if (!users[i].used) {
+            slot = i;
+            break;
+        }
+    if (slot < 0) return -1;
+    User *u = &users[slot];
+    memset(u, 0, sizeof *u);
+    u->used = 1;
+    u->id = next_uid++;
+    memcpy(u->nom, body, PAROLES_NOM_LEN);
+    memset(u->cle, 0, sizeof u->cle);
+    u->udp_port = (uint16_t)(20000u + (u->id % 45000u));
+    u->reg_addr = *peer;
+    u->reg_addr.sin6_port = htons(u->udp_port);
+    unsigned char out[256];
+    unsigned char *p = out;
+    wire_put_u8(&p, PAROLES_CODEREQ_REG_OK);
+    wire_put_u32_be(&p, u->id);
+    wire_put_u16_be(&p, u->udp_port);
+    wire_put_zeros(&p, PAROLES_CLE_LEN);
+    vlog("reg user %u nom=%.10s udp=%u\n", u->id, u->nom, u->udp_port);
+    return writen(fd, out, (size_t)(p - out));
+}
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
