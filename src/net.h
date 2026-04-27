@@ -5,6 +5,7 @@
 #include <poll.h>
 #include <stddef.h>
 
+/* N°41 — timeout TCP lecture (client idle) */
 #define PAROLES_TCP_TIMEOUT_MS 30000
 
 int tcp6_listen(const char *bind_addr, uint16_t port);
