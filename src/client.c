@@ -1,4 +1,5 @@
 #include "../include/paroles_proto.h"
+#include "../include/tls_io.h"
 #include "net.h"
 #include "wire.h"
 #include <arpa/inet.h>
@@ -9,10 +10,17 @@
 
 /* N°42 — mode verbeux : paroles_client -v … */
 static int verbose;
+static SSL_CTX *g_tls_cli;
+static SSL *g_io_ssl;
 
 static void pad_nom(unsigned char *dst, const char *src) {
     memset(dst, 0, PAROLES_NOM_LEN);
     strncpy((char *)dst, src, PAROLES_NOM_LEN);
+}
+
+static const char *tls_sni_for_host(const char *host) {
+    if (!strcmp(host, "::1") || !strcmp(host, "127.0.0.1")) return "localhost";
+    return host;
 }
 
 static int one_cmd(const char *host, uint16_t port, const unsigned char *msg, size_t len,
@@ -24,15 +32,45 @@ static int one_cmd(const char *host, uint16_t port, const unsigned char *msg, si
         perror("connect");
         return -1;
     }
-    if (writen(fd, msg, len) < 0) {
+    SSL *ssl = NULL;
+    if (g_tls_cli) {
+        ssl = SSL_new(g_tls_cli);
+        if (!ssl) {
+            close(fd);
+            return -1;
+        }
+        SSL_set_fd(ssl, fd);
+        if (SSL_set_tlsext_host_name(ssl, tls_sni_for_host(host)) != 1) {
+            SSL_free(ssl);
+            close(fd);
+            return -1;
+        }
+        if (SSL_connect(ssl) <= 0) {
+            SSL_free(ssl);
+            close(fd);
+            return -1;
+        }
+    }
+    g_io_ssl = ssl;
+    if (conn_writen(g_io_ssl, fd, msg, len) < 0) {
+        g_io_ssl = NULL;
+        if (ssl) {
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+        }
         close(fd);
         return -1;
     }
-    ssize_t n = read(fd, resp, rmax);
+    int n = conn_read_upto(g_io_ssl, fd, resp, rmax, PAROLES_TCP_TIMEOUT_MS);
+    g_io_ssl = NULL;
+    if (ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+    }
     close(fd);
     if (n <= 0) return -1;
-    if (verbose) fprintf(stderr, "reponse %zd octets, code=%u\n", n, resp[0]);
-    return (int)n;
+    if (verbose) fprintf(stderr, "reponse %d octets, code=%u\n", n, resp[0]);
+    return n;
 }
 
 static int cmd_reg(const char *host, uint16_t port, const char *name) {
@@ -258,7 +296,7 @@ static int cmd_feed(const char *host, uint16_t port, uint32_t uid, uint32_t idg,
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: paroles_client [-v] host port cmd [args]\n"
+            "usage: paroles_client [-v] [--tls ca.pem] host port cmd [args]\n"
             "  reg <nom>\n"
             "  newgroup <uid> <nom>\n"
             "  invite <admin> <idg> <uid> ...\n"
@@ -270,6 +308,8 @@ static void usage(void) {
             "  feed <uid> <idg> <numb> <numr>\n");
 }
 
+static void client_tls_atexit(void) { paroles_tls_ctx_free(g_tls_cli); }
+
 int main(int argc, char **argv) {
     int i = 1;
     verbose = 0;
@@ -277,15 +317,30 @@ int main(int argc, char **argv) {
         verbose = 1;
         i++;
     }
+    if (argc - i >= 2 && strcmp(argv[i], "--tls") == 0) {
+        g_tls_cli = paroles_tls_client_ctx(argv[i + 1]);
+        if (!g_tls_cli) {
+            fprintf(stderr, "paroles_client: TLS (CA) init impossible\n");
+            return 1;
+        }
+        i += 2;
+    }
     if (argc - i < 3) {
         usage();
+        paroles_tls_ctx_free(g_tls_cli);
         return 1;
     }
     const char *host = argv[i++];
     uint16_t port = (uint16_t)atoi(argv[i++]);
     const char *cmd = argv[i++];
-    if (!strcmp(cmd, "reg"))
-        return cmd_reg(host, port, argv[i]) < 0 ? 1 : 0;
+    if (g_tls_cli) {
+        static int tls_atexit_done;
+        if (!tls_atexit_done) {
+            atexit(client_tls_atexit);
+            tls_atexit_done = 1;
+        }
+    }
+    if (!strcmp(cmd, "reg")) return cmd_reg(host, port, argv[i]) < 0 ? 1 : 0;
     if (!strcmp(cmd, "newgroup"))
         return cmd_newgroup(host, port, (uint32_t)atoi(argv[i]), argv[i + 1]) < 0 ? 1 : 0;
     if (!strcmp(cmd, "invite")) {
