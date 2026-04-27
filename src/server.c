@@ -98,7 +98,6 @@ static void send_err(int fd) {
     writen(fd, b, sizeof b);
 }
 
-/* N°38 — erreur 31 + message si -v */
 static void send_err_msg(int fd, const char *msg) {
     if (!msg || !*msg) {
         send_err(fd);
@@ -174,6 +173,7 @@ static void feed_push(Group *g, FeedItem *it) {
     g->feed[g->nfeed++] = it;
 }
 
+/* N°39 — notifications multicast 18–21 (CODEREQ|IDG BE) */
 static void notif_mcast(Group *g, uint16_t code) {
     int s = socket(AF_INET6, SOCK_DGRAM, 0);
     if (s < 0) return;
