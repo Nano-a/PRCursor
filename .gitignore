@@ -10,6 +10,9 @@ paroles_client
 paroles_smoke
 test_*
 
+# Certificats générés (scripts/gencerts.sh)
+tests/fixtures/certs/
+
 # Éditeurs / OS
 *~
 .DS_Store

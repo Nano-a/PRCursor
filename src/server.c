@@ -1,4 +1,5 @@
 #include "../include/paroles_proto.h"
+#include "../include/tls_io.h"
 #include "net.h"
 #include "wire.h"
 #include <arpa/inet.h>
@@ -9,6 +10,7 @@
 #include <unistd.h>
 
 static int verbose;
+static SSL *g_io_ssl;
 
 static void vlog(const char *fmt, ...) {
     if (!verbose) return;
@@ -95,7 +97,7 @@ static void send_err(int fd) {
     unsigned char b[1 + PAROLES_ERR_TAIL];
     memset(b, 0, sizeof b);
     b[0] = PAROLES_CODEREQ_ERR;
-    writen(fd, b, sizeof b);
+    conn_writen(g_io_ssl, fd, b, sizeof b);
 }
 
 static void send_err_msg(int fd, const char *msg) {
@@ -111,14 +113,14 @@ static void send_err_msg(int fd, const char *msg) {
     wire_put_u16_be(&p, (uint16_t)ml);
     memcpy(p, msg, ml);
     p += ml;
-    writen(fd, buf, (size_t)(p - buf));
+    conn_writen(g_io_ssl, fd, buf, (size_t)(p - buf));
 }
 
 static void send_ack(int fd) {
     unsigned char b[1 + PAROLES_ERR_TAIL];
     memset(b, 0, sizeof b);
     b[0] = PAROLES_CODEREQ_ACK;
-    writen(fd, b, sizeof b);
+    conn_writen(g_io_ssl, fd, b, sizeof b);
 }
 
 static int group_is_member(Group *g, uint32_t uid) {
@@ -241,7 +243,7 @@ static int handle_reg(int fd, struct sockaddr_in6 *peer, const unsigned char *bo
     wire_put_u16_be(&p, u->udp_port);
     wire_put_zeros(&p, PAROLES_CLE_LEN);
     vlog("reg user %u nom=%.10s udp=%u\n", u->id, u->nom, u->udp_port);
-    return writen(fd, out, (size_t)(p - out));
+    return conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
 }
 
 static int handle_new_group(int fd, uint32_t uid, const unsigned char *body, size_t blen) {
@@ -282,7 +284,7 @@ static int handle_new_group(int fd, uint32_t uid, const unsigned char *body, siz
     memcpy(p, &g->mcast_ip, 16);
     p += 16;
     vlog("group %u '%s' admin=%u\n", g->idg, g->name, uid);
-    return writen(fd, out, (size_t)(p - out));
+    return conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
 }
 
 static int handle_invite(int fd, uint32_t uid, const unsigned char *body, size_t blen) {
@@ -346,7 +348,7 @@ static int handle_list_inv(int fd, uint32_t uid, const unsigned char *body, size
     }
     unsigned char *p2 = nbp;
     wire_put_u32_be(&p2, nb);
-    int r = writen(fd, out, (size_t)(p - out));
+    int r = conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
     free(out);
     return r;
 }
@@ -399,7 +401,7 @@ static int handle_inv_ans(int fd, uint32_t uid, const unsigned char *body, size_
     }
     notif_mcast(g, PAROLES_NOTIF_JOIN);
     vlog("user %u joined group %u\n", uid, idg);
-    return writen(fd, out, (size_t)(p - out));
+    return conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
 }
 
 static int handle_list_mem(int fd, uint32_t uid, uint32_t idg) {
@@ -421,7 +423,7 @@ static int handle_list_mem(int fd, uint32_t uid, uint32_t idg) {
         }
         unsigned char *pp = nbspot;
         wire_put_u32_be(&pp, nb);
-        return writen(fd, out, (size_t)(p - out));
+        return conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
     }
     Group *g = find_group(idg);
     if (!g) return -1;
@@ -435,7 +437,7 @@ static int handle_list_mem(int fd, uint32_t uid, uint32_t idg) {
         memcpy(p, uu->nom, PAROLES_NOM_LEN);
         p += PAROLES_NOM_LEN;
     }
-    return writen(fd, out, (size_t)(p - out));
+    return conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
 }
 
 static int handle_post(int fd, uint32_t uid, const unsigned char *body, size_t blen) {
@@ -477,7 +479,7 @@ static int handle_post(int fd, uint32_t uid, const unsigned char *body, size_t b
     wire_put_u32_be(&p, idg);
     wire_put_u32_be(&p, po->numb);
     notif_mcast(g, PAROLES_NOTIF_NEW_MSG);
-    return writen(fd, out, (size_t)(p - out));
+    return conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
 }
 
 static int handle_reply(int fd, uint32_t uid, const unsigned char *body, size_t blen) {
@@ -515,7 +517,7 @@ static int handle_reply(int fd, uint32_t uid, const unsigned char *body, size_t 
     notif_mcast(g, PAROLES_NOTIF_NEW_MSG);
     User *auth = find_user(po->author);
     if (auth && auth->id != uid) notif_udp_user(auth, PAROLES_NOTIF_FETCH, idg);
-    return writen(fd, out, (size_t)(p - out));
+    return conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
 }
 
 static ssize_t feed_index_after(Group *g, uint32_t numb, uint32_t numr) {
@@ -573,7 +575,7 @@ static int handle_feed(int fd, uint32_t uid, const unsigned char *body, size_t b
     }
     unsigned char *pp = msp;
     wire_put_u32_be(&pp, cnt);
-    int r = writen(fd, out, (size_t)(p - out));
+    int r = conn_writen(g_io_ssl, fd, out, (size_t)(p - out));
     free(out);
     return r;
 }
@@ -662,84 +664,102 @@ static int dispatch(int fd, struct sockaddr_in6 *peer, uint8_t code, const unsig
     }
 }
 
-static void serve_client(int cfd, struct sockaddr_in6 *peer) {
-    unsigned char hdr[1];
-    if (readn(cfd, hdr, 1, PAROLES_TCP_TIMEOUT_MS) < 0) {
-        close(cfd);
-        return;
+static void serve_client(int cfd, struct sockaddr_in6 *peer, SSL_CTX *tls_ctx) {
+    SSL *ssl = NULL;
+    if (tls_ctx) {
+        ssl = SSL_new(tls_ctx);
+        if (!ssl) {
+            close(cfd);
+            return;
+        }
+        SSL_set_fd(ssl, cfd);
+        if (SSL_accept(ssl) <= 0) {
+            SSL_free(ssl);
+            close(cfd);
+            return;
+        }
     }
+    g_io_ssl = ssl;
+
+    unsigned char hdr[1];
+    if (conn_readn(g_io_ssl, cfd, hdr, 1, PAROLES_TCP_TIMEOUT_MS) < 0) goto end;
     uint8_t code = hdr[0];
     unsigned char buf[256 * 1024];
     switch (code) {
     case PAROLES_CODEREQ_REG:
-        if (readn(cfd, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         if (dispatch(cfd, peer, code, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN) < 0) goto err;
         break;
     case PAROLES_CODEREQ_NEW_GROUP:
-        if (readn(cfd, buf, 6, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 6, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         {
             uint16_t ln = (uint16_t)((buf[4] << 8) | buf[5]);
             if (ln > MAX_BODY) goto bad;
-            if (readn(cfd, buf + 6, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (conn_readn(g_io_ssl, cfd, buf + 6, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
             if (dispatch(cfd, peer, code, buf, 6 + ln) < 0) goto err;
         }
         break;
     case PAROLES_CODEREQ_INVITE:
-        if (readn(cfd, buf, 12, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 12, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         {
             uint32_t nb = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
                           ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
             if (nb > 8192) goto bad;
-            if (nb > 0 && readn(cfd, buf + 12, nb * 8u, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (nb > 0 && conn_readn(g_io_ssl, cfd, buf + 12, nb * 8u, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
             if (dispatch(cfd, peer, code, buf, 12 + nb * 8u) < 0) goto err;
         }
         break;
     case PAROLES_CODEREQ_LIST_INV:
-        if (readn(cfd, buf, 4, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 4, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         if (dispatch(cfd, peer, code, buf, 4) < 0) goto err;
         break;
     case PAROLES_CODEREQ_INV_ANS:
-        if (readn(cfd, buf, 9, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 9, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         if (dispatch(cfd, peer, code, buf, 9) < 0) goto err;
         break;
     case PAROLES_CODEREQ_LIST_MEM:
-        if (readn(cfd, buf, 8, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 8, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         if (dispatch(cfd, peer, code, buf, 8) < 0) goto err;
         break;
     case PAROLES_CODEREQ_POST:
-        if (readn(cfd, buf, 10, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 10, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         {
             uint16_t ln = (uint16_t)((buf[8] << 8) | buf[9]);
             if (ln > MAX_BODY) goto bad;
-            if (readn(cfd, buf + 10, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (conn_readn(g_io_ssl, cfd, buf + 10, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
             if (dispatch(cfd, peer, code, buf, 10 + ln) < 0) goto err;
         }
         break;
     case PAROLES_CODEREQ_REPLY:
-        if (readn(cfd, buf, 14, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 14, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         {
             uint16_t ln = (uint16_t)((buf[12] << 8) | buf[13]);
             if (ln > MAX_BODY) goto bad;
-            if (readn(cfd, buf + 14, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (conn_readn(g_io_ssl, cfd, buf + 14, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
             if (dispatch(cfd, peer, code, buf, 14 + ln) < 0) goto err;
         }
         break;
     case PAROLES_CODEREQ_FEED:
-        if (readn(cfd, buf, 16, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (conn_readn(g_io_ssl, cfd, buf, 16, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
         if (dispatch(cfd, peer, code, buf, 16) < 0) goto err;
         break;
     default:
         goto err;
     }
-    close(cfd);
-    return;
+    goto end;
 bad:
-    close(cfd);
-    return;
+    goto end;
 err:
     if (verbose) send_err_msg(cfd, "erreur requete");
     else
         send_err(cfd);
+    goto end;
+end:
+    g_io_ssl = NULL;
+    if (ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+    }
     close(cfd);
 }
 
@@ -747,27 +767,44 @@ int main(int argc, char **argv) {
     verbose = (argc >= 2 && strcmp(argv[1], "-v") == 0);
     int pi = 1;
     if (verbose) pi++;
+    const char *tls_cert = NULL, *tls_key = NULL;
+    SSL_CTX *tls_ctx = NULL;
+    if (argc - pi >= 3 && strcmp(argv[pi], "--tls") == 0) {
+        tls_cert = argv[pi + 1];
+        tls_key = argv[pi + 2];
+        pi += 3;
+        tls_ctx = paroles_tls_server_ctx(tls_cert, tls_key);
+        if (!tls_ctx) {
+            fprintf(stderr, "paroles_server: TLS init impossible (cert/key)\n");
+            return 1;
+        }
+    }
     if (argc - pi < 2) {
-        fprintf(stderr, "usage: paroles_server [-v] [bind] port\n");
+        fprintf(stderr,
+                "usage: paroles_server [-v] [--tls cert.pem key.pem] bind_ipv6 port\n");
+        paroles_tls_ctx_free(tls_ctx);
         return 1;
     }
     const char *host = argv[pi];
     uint16_t port = (uint16_t)atoi(argv[pi + 1]);
     if (strcmp(host, "-v") == 0) {
         fprintf(stderr, "usage error\n");
+        paroles_tls_ctx_free(tls_ctx);
         return 1;
     }
     int srv = tcp6_listen(host, port);
     if (srv < 0) {
         perror("listen");
+        paroles_tls_ctx_free(tls_ctx);
         return 1;
     }
-    fprintf(stderr, "paroles_server ecoute [%s]:%u\n", host, (unsigned)port);
+    fprintf(stderr, "paroles_server ecoute [%s]:%u%s\n", host, (unsigned)port,
+            tls_ctx ? " (TLS)" : "");
     for (;;) {
         struct sockaddr_in6 peer;
         socklen_t pl = sizeof peer;
         int c = tcp6_accept(srv, &peer, &pl);
         if (c < 0) continue;
-        serve_client(c, &peer);
+        serve_client(c, &peer, tls_ctx);
     }
 }
