@@ -1,8 +1,11 @@
 #include "../include/paroles_proto.h"
+#include "../include/auth_ed25519.h"
 #include "../include/tls_io.h"
 #include "net.h"
 #include "wire.h"
 #include <arpa/inet.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +15,8 @@
 static int verbose;
 static SSL_CTX *g_tls_cli;
 static SSL *g_io_ssl;
+static EVP_PKEY *g_auth_priv;
+static EVP_PKEY *g_srv_pub_verify;
 
 static void pad_nom(unsigned char *dst, const char *src) {
     memset(dst, 0, PAROLES_NOM_LEN);
@@ -23,8 +28,32 @@ static const char *tls_sni_for_host(const char *host) {
     return host;
 }
 
-static int one_cmd(const char *host, uint16_t port, const unsigned char *msg, size_t len,
-                   unsigned char *resp, size_t rmax) {
+static void nonce_path(char *out, size_t cap, uint16_t port, uint32_t uid) {
+    snprintf(out, cap, "/tmp/paroles_nonce_%u_%u", (unsigned)port, (unsigned)uid);
+}
+
+static uint32_t read_nonce(uint16_t port, uint32_t uid) {
+    char path[128];
+    nonce_path(path, sizeof path, port, uid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    unsigned long v = 0;
+    if (fscanf(f, "%lu", &v) != 1) v = 0;
+    fclose(f);
+    return (uint32_t)v;
+}
+
+static void write_nonce(uint16_t port, uint32_t uid, uint32_t n) {
+    char path[128];
+    nonce_path(path, sizeof path, port, uid);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "%u", n);
+    fclose(f);
+}
+
+static int one_cmd_plain(const char *host, uint16_t port, const unsigned char *msg, size_t len,
+                         unsigned char *resp, size_t rmax) {
     struct sockaddr_in6 lh;
     memset(&lh, 0, sizeof lh);
     int fd = tcp6_connect(host, port, &lh);
@@ -73,14 +102,142 @@ static int one_cmd(const char *host, uint16_t port, const unsigned char *msg, si
     return n;
 }
 
-static int cmd_reg(const char *host, uint16_t port, const char *name) {
+static int one_cmd_authed(const char *host, uint16_t port, uint32_t uid, const unsigned char *msg,
+                          size_t len, unsigned char *resp, size_t rmax) {
+    struct sockaddr_in6 lh;
+    memset(&lh, 0, sizeof lh);
+    int fd = tcp6_connect(host, port, &lh);
+    if (fd < 0) {
+        perror("connect");
+        return -1;
+    }
+    SSL *ssl = NULL;
+    if (g_tls_cli) {
+        ssl = SSL_new(g_tls_cli);
+        if (!ssl) {
+            close(fd);
+            return -1;
+        }
+        SSL_set_fd(ssl, fd);
+        if (SSL_set_tlsext_host_name(ssl, tls_sni_for_host(host)) != 1) {
+            SSL_free(ssl);
+            close(fd);
+            return -1;
+        }
+        if (SSL_connect(ssl) <= 0) {
+            SSL_free(ssl);
+            close(fd);
+            return -1;
+        }
+    }
+    g_io_ssl = ssl;
+    uint32_t num = read_nonce(port, uid);
+    unsigned char tbs[9];
+    unsigned char *tp = tbs;
+    wire_put_u8(&tp, PAROLES_CODEREQ_AUTH);
+    wire_put_u32_be(&tp, uid);
+    wire_put_u32_be(&tp, num);
+    unsigned char sig[128];
+    size_t slen = sizeof sig;
+    if (paroles_ed25519_sign(g_auth_priv, tbs, 9, sig, &slen) < 0) goto fail;
+    if (slen != PAROLES_ED25519_SIG_LEN) goto fail;
+    unsigned char authpkt[96];
+    tp = authpkt;
+    wire_put_u8(&tp, PAROLES_CODEREQ_AUTH);
+    wire_put_u32_be(&tp, uid);
+    wire_put_u32_be(&tp, num);
+    wire_put_u16_be(&tp, (uint16_t)slen);
+    memcpy(tp, sig, slen);
+    tp += slen;
+    if (conn_writen(g_io_ssl, fd, authpkt, (size_t)(tp - authpkt)) < 0) goto fail;
+
+    unsigned char aresp[128];
+    if (conn_readn(g_io_ssl, fd, aresp, 1 + 4 + 4 + 2 + PAROLES_ED25519_SIG_LEN, PAROLES_TCP_TIMEOUT_MS) < 0)
+        goto fail;
+    const unsigned char *q = aresp;
+    size_t left = sizeof aresp;
+    uint8_t ac;
+    if (wire_get_u8(&q, &left, &ac) < 0 || ac != PAROLES_CODEREQ_AUTH_OK) goto fail;
+    uint32_t rid, rnum;
+    uint16_t lsig;
+    if (wire_get_u32_be(&q, &left, &rid) < 0) goto fail;
+    if (wire_get_u32_be(&q, &left, &rnum) < 0) goto fail;
+    if (wire_get_u16_be(&q, &left, &lsig) < 0) goto fail;
+    if (lsig != PAROLES_ED25519_SIG_LEN || left < PAROLES_ED25519_SIG_LEN) goto fail;
+    if (rid != uid || rnum != num) goto fail;
+    unsigned char stbs[9];
+    tp = stbs;
+    wire_put_u8(&tp, PAROLES_CODEREQ_AUTH_OK);
+    wire_put_u32_be(&tp, rid);
+    wire_put_u32_be(&tp, rnum);
+    if (g_srv_pub_verify && paroles_ed25519_verify(g_srv_pub_verify, stbs, 9, q, PAROLES_ED25519_SIG_LEN) < 0)
+        goto fail;
+    write_nonce(port, uid, num + 1u);
+
+    if (conn_writen(g_io_ssl, fd, msg, len) < 0) goto fail;
+    int n = conn_read_upto(g_io_ssl, fd, resp, rmax, PAROLES_TCP_TIMEOUT_MS);
+    g_io_ssl = NULL;
+    if (ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+    }
+    close(fd);
+    if (n <= 0) return -1;
+    if (verbose) fprintf(stderr, "reponse %d octets, code=%u\n", n, resp[0]);
+    return n;
+fail:
+    g_io_ssl = NULL;
+    if (ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+    }
+    close(fd);
+    return -1;
+}
+
+static int one_cmd(const char *host, uint16_t port, uint32_t auth_uid, const unsigned char *msg, size_t len,
+                   unsigned char *resp, size_t rmax) {
+    if (!g_auth_priv) return one_cmd_plain(host, port, msg, len, resp, rmax);
+    return one_cmd_authed(host, port, auth_uid, msg, len, resp, rmax);
+}
+
+static int fill_ed25519_cle_from_pem(const char *path, unsigned char *cle) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    EVP_PKEY *pk = PEM_read_PUBKEY(f, NULL, NULL, NULL);
+    fclose(f);
+    if (!pk) return -1;
+    if (EVP_PKEY_get_id(pk) != EVP_PKEY_ED25519) {
+        EVP_PKEY_free(pk);
+        return -1;
+    }
+    unsigned char raw[32];
+    size_t len = sizeof raw;
+    if (EVP_PKEY_get_raw_public_key(pk, raw, &len) != 1 || len != 32) {
+        EVP_PKEY_free(pk);
+        return -1;
+    }
+    memset(cle, 0, (size_t)PAROLES_CLE_LEN);
+    memcpy(cle, raw, 32);
+    EVP_PKEY_free(pk);
+    return 0;
+}
+
+static int cmd_reg(const char *host, uint16_t port, const char *name, const char *pub_pem) {
     unsigned char msg[256], resp[4096];
     unsigned char *p = msg;
     wire_put_u8(&p, PAROLES_CODEREQ_REG);
     pad_nom(p, name);
     p += PAROLES_NOM_LEN;
-    wire_put_zeros(&p, PAROLES_CLE_LEN);
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    if (pub_pem) {
+        unsigned char cle[PAROLES_CLE_LEN];
+        if (fill_ed25519_cle_from_pem(pub_pem, cle) < 0) return -1;
+        memcpy(p, cle, PAROLES_CLE_LEN);
+        p += PAROLES_CLE_LEN;
+    } else {
+        wire_put_zeros(&p, PAROLES_CLE_LEN);
+    }
+    int n = one_cmd_plain(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1 + 4 + 2 + PAROLES_CLE_LEN) return -1;
     const unsigned char *q = resp;
     size_t left = (size_t)n;
@@ -103,7 +260,7 @@ static int cmd_newgroup(const char *host, uint16_t port, uint32_t uid, const cha
     wire_put_u16_be(&p, gl);
     memcpy(p, gname, gl);
     p += gl;
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, uid, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1 + 4 + 2 + 16) return -1;
     const unsigned char *q = resp;
     size_t left = (size_t)n;
@@ -131,7 +288,7 @@ static int cmd_invite(const char *host, uint16_t port, uint32_t admin, uint32_t 
         wire_put_u32_be(&p, ids[i]);
         wire_put_zeros(&p, PAROLES_INV_PAD);
     }
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, admin, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1) return -1;
     return resp[0] == PAROLES_CODEREQ_ACK ? 0 : -1;
 }
@@ -141,7 +298,7 @@ static int cmd_listinv(const char *host, uint16_t port, uint32_t uid) {
     unsigned char *p = msg;
     wire_put_u8(&p, PAROLES_CODEREQ_LIST_INV);
     wire_put_u32_be(&p, uid);
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, uid, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 5) return -1;
     const unsigned char *q = resp + 1;
     size_t left = (size_t)n - 1;
@@ -175,7 +332,7 @@ static int cmd_ans(const char *host, uint16_t port, uint32_t uid, uint32_t idg, 
     wire_put_u32_be(&p, uid);
     wire_put_u32_be(&p, idg);
     wire_put_u8(&p, (uint8_t)an);
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, uid, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1) return -1;
     if (resp[0] == PAROLES_CODEREQ_ACK) {
         printf("OK ack\n");
@@ -194,7 +351,7 @@ static int cmd_listmem(const char *host, uint16_t port, uint32_t uid, uint32_t i
     wire_put_u8(&p, PAROLES_CODEREQ_LIST_MEM);
     wire_put_u32_be(&p, uid);
     wire_put_u32_be(&p, idg);
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, uid, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1 + 4 + 4) return -1;
     const unsigned char *q = resp + 1;
     size_t left = (size_t)n - 1;
@@ -226,7 +383,7 @@ static int cmd_post(const char *host, uint16_t port, uint32_t uid, uint32_t idg,
     wire_put_u16_be(&p, tl);
     memcpy(p, txt, tl);
     p += tl;
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, uid, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1 + 4 + 4) return -1;
     if (resp[0] != PAROLES_CODEREQ_POST_OK) return -1;
     const unsigned char *q = resp + 1;
@@ -250,7 +407,7 @@ static int cmd_reply(const char *host, uint16_t port, uint32_t uid, uint32_t idg
     wire_put_u16_be(&p, tl);
     memcpy(p, txt, tl);
     p += tl;
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, uid, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1 + 4 + 4 + 4) return -1;
     if (resp[0] != PAROLES_CODEREQ_REPLY_OK) return -1;
     printf("OK reply\n");
@@ -266,7 +423,7 @@ static int cmd_feed(const char *host, uint16_t port, uint32_t uid, uint32_t idg,
     wire_put_u32_be(&p, idg);
     wire_put_u32_be(&p, numb);
     wire_put_u32_be(&p, numr);
-    int n = one_cmd(host, port, msg, (size_t)(p - msg), resp, sizeof resp);
+    int n = one_cmd(host, port, uid, msg, (size_t)(p - msg), resp, sizeof resp);
     if (n < 1 + 4 + 4) return -1;
     if (resp[0] != PAROLES_CODEREQ_FEED_OK) return -1;
     const unsigned char *q = resp + 1;
@@ -296,8 +453,9 @@ static int cmd_feed(const char *host, uint16_t port, uint32_t uid, uint32_t idg,
 
 static void usage(void) {
     fprintf(stderr,
-            "usage: paroles_client [-v] [--tls ca.pem] host port cmd [args]\n"
-            "  reg <nom>\n"
+            "usage: paroles_client [-v] [--tls ca.pem] [--key priv_ed25519.pem] [--server-pub pub_ed25519.pem] "
+            "host port cmd [args]\n"
+            "  reg <nom> [pub_ed25519.pem]\n"
             "  newgroup <uid> <nom>\n"
             "  invite <admin> <idg> <uid> ...\n"
             "  listinv <uid>\n"
@@ -308,7 +466,13 @@ static void usage(void) {
             "  feed <uid> <idg> <numb> <numr>\n");
 }
 
-static void client_tls_atexit(void) { paroles_tls_ctx_free(g_tls_cli); }
+static void client_tls_atexit(void) {
+    paroles_tls_ctx_free(g_tls_cli);
+    EVP_PKEY_free(g_auth_priv);
+    EVP_PKEY_free(g_srv_pub_verify);
+    g_auth_priv = NULL;
+    g_srv_pub_verify = NULL;
+}
 
 int main(int argc, char **argv) {
     int i = 1;
@@ -325,22 +489,50 @@ int main(int argc, char **argv) {
         }
         i += 2;
     }
+    if (argc - i >= 2 && strcmp(argv[i], "--key") == 0) {
+        g_auth_priv = paroles_load_ed25519_private_pem(argv[i + 1]);
+        if (!g_auth_priv) {
+            fprintf(stderr, "paroles_client: --key ED25519 invalide\n");
+            paroles_tls_ctx_free(g_tls_cli);
+            return 1;
+        }
+        i += 2;
+    }
+    if (argc - i >= 2 && strcmp(argv[i], "--server-pub") == 0) {
+        g_srv_pub_verify = paroles_load_ed25519_public_pem(argv[i + 1]);
+        if (!g_srv_pub_verify) {
+            fprintf(stderr, "paroles_client: --server-pub ED25519 invalide\n");
+            EVP_PKEY_free(g_auth_priv);
+            paroles_tls_ctx_free(g_tls_cli);
+            return 1;
+        }
+        i += 2;
+    }
     if (argc - i < 3) {
         usage();
+        EVP_PKEY_free(g_auth_priv);
+        EVP_PKEY_free(g_srv_pub_verify);
         paroles_tls_ctx_free(g_tls_cli);
         return 1;
     }
     const char *host = argv[i++];
     uint16_t port = (uint16_t)atoi(argv[i++]);
     const char *cmd = argv[i++];
-    if (g_tls_cli) {
+    if (g_tls_cli || g_auth_priv || g_srv_pub_verify) {
         static int tls_atexit_done;
         if (!tls_atexit_done) {
             atexit(client_tls_atexit);
             tls_atexit_done = 1;
         }
     }
-    if (!strcmp(cmd, "reg")) return cmd_reg(host, port, argv[i]) < 0 ? 1 : 0;
+    if (!strcmp(cmd, "reg")) {
+        if (argc - i < 1) {
+            usage();
+            return 1;
+        }
+        const char *ppem = (argc - i >= 2) ? argv[i + 1] : NULL;
+        return cmd_reg(host, port, argv[i], ppem) < 0 ? 1 : 0;
+    }
     if (!strcmp(cmd, "newgroup"))
         return cmd_newgroup(host, port, (uint32_t)atoi(argv[i]), argv[i + 1]) < 0 ? 1 : 0;
     if (!strcmp(cmd, "invite")) {

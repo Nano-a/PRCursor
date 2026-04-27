@@ -1,6 +1,6 @@
 # PR6 — Paroles
 
-Projet réseau **IPv6** (protocole Paroles) — client et serveur en C, étape 1 sans TLS.
+Projet réseau **IPv6** (protocole Paroles) — client et serveur en C : TCP, **TLS** (OpenSSL), authentification **ED25519** (CODEREQ 0 / AUTH_OK 25) sur la même session que le métier après l’inscription.
 
 ## Compilation
 
@@ -10,7 +10,7 @@ make
 
 Binaires : `paroles_server`, `paroles_client`.
 
-## Exemple
+## Exemple (plain TCP, sans TLS)
 
 Terminal 1 :
 
@@ -25,14 +25,35 @@ Terminal 2 :
 ./paroles_client ::1 4242 newgroup 1 MonGroupe
 ```
 
-Voir `paroles_client` sans arguments pour la liste des commandes (`invite`, `post`, `feed`, etc.).
+## TLS + auth (étapes 2–3)
+
+Serveur (certificats générés par `tests/fixtures/certs/gen.sh` ou équivalent) :
+
+```bash
+./paroles_server --tls server.pem server.key ca.pem :: 4242 --signing-key srv_priv.pem
+```
+
+Client après inscription : même connexion TLS, message AUTH (0) puis commande métier ; clés utilisateur PEM :
+
+```bash
+./paroles_client --tls ca.pem ::1 4242 --key user_priv.pem --server-pub srv_pub.pem newgroup 1 MonGroupe
+```
+
+Voir `paroles_client` / `paroles_server` sans arguments pour les options (`--verbose`, ports UDP/multicast, etc.).
+
+## Documentation (CHRONO 66–68)
+
+- [`docs/SOUTENANCE.md`](docs/SOUTENANCE.md) — démo et relecture finale  
+- [`docs/GIT_EQUIPE.md`](docs/GIT_EQUIPE.md) — historique visible pour chaque membre  
+- [`docs/HOTFIX.md`](docs/HOTFIX.md) — procédure `hotfix/*` depuis `main`
 
 ## Test rapide
 
 ```bash
-chmod +x tests/smoke.sh
-./tests/smoke.sh
+make test
 ```
+
+Smoke seul : `chmod +x tests/smoke.sh && ./tests/smoke.sh`
 
 ## Auteurs
 

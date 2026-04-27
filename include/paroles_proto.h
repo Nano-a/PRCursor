@@ -7,6 +7,11 @@
 #define PAROLES_CLE_LEN 113
 #define PAROLES_IP6_BIN 16
 
+/* Étape 3 — authentification (signature des 3 champs : CODEREQ, ID, NUM). */
+#define PAROLES_CODEREQ_AUTH 0
+#define PAROLES_CODEREQ_AUTH_OK 25
+#define PAROLES_ED25519_SIG_LEN 64
+
 #define PAROLES_CODEREQ_REG 1
 #define PAROLES_CODEREQ_REG_OK 2
 #define PAROLES_CODEREQ_NEW_GROUP 3
