@@ -1,0 +1,17 @@
+# Objets et binaires C
+*.o
+*.a
+*.so
+*.d
+
+# Binaires projet (noms usuels)
+paroles_server
+paroles_client
+paroles_smoke
+test_*
+
+# Éditeurs / OS
+*~
+.DS_Store
+.vscode/
+*.swp
