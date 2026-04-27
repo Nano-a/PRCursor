@@ -91,7 +91,6 @@ static int cle_is_zero(const uint8_t *c) {
     return 1;
 }
 
-/* N°37 — rejets : erreurs métier → CODEREQ 31 */
 static void send_err(int fd) {
     unsigned char b[1 + PAROLES_ERR_TAIL];
     memset(b, 0, sizeof b);
@@ -99,6 +98,7 @@ static void send_err(int fd) {
     writen(fd, b, sizeof b);
 }
 
+/* N°38 — erreur 31 + message si -v */
 static void send_err_msg(int fd, const char *msg) {
     if (!msg || !*msg) {
         send_err(fd);
