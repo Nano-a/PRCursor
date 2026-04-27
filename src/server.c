@@ -660,6 +660,87 @@ static int dispatch(int fd, struct sockaddr_in6 *peer, uint8_t code, const unsig
         return -1;
     }
 }
+
+static void serve_client(int cfd, struct sockaddr_in6 *peer) {
+    unsigned char hdr[1];
+    if (readn(cfd, hdr, 1, PAROLES_TCP_TIMEOUT_MS) < 0) {
+        close(cfd);
+        return;
+    }
+    uint8_t code = hdr[0];
+    unsigned char buf[256 * 1024];
+    switch (code) {
+    case PAROLES_CODEREQ_REG:
+        if (readn(cfd, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (dispatch(cfd, peer, code, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN) < 0) goto err;
+        break;
+    case PAROLES_CODEREQ_NEW_GROUP:
+        if (readn(cfd, buf, 6, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        {
+            uint16_t ln = (uint16_t)((buf[4] << 8) | buf[5]);
+            if (ln > MAX_BODY) goto bad;
+            if (readn(cfd, buf + 6, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (dispatch(cfd, peer, code, buf, 6 + ln) < 0) goto err;
+        }
+        break;
+    case PAROLES_CODEREQ_INVITE:
+        if (readn(cfd, buf, 12, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        {
+            uint32_t nb = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
+                          ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
+            if (nb > 8192) goto bad;
+            if (nb > 0 && readn(cfd, buf + 12, nb * 8u, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (dispatch(cfd, peer, code, buf, 12 + nb * 8u) < 0) goto err;
+        }
+        break;
+    case PAROLES_CODEREQ_LIST_INV:
+        if (readn(cfd, buf, 4, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (dispatch(cfd, peer, code, buf, 4) < 0) goto err;
+        break;
+    case PAROLES_CODEREQ_INV_ANS:
+        if (readn(cfd, buf, 9, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (dispatch(cfd, peer, code, buf, 9) < 0) goto err;
+        break;
+    case PAROLES_CODEREQ_LIST_MEM:
+        if (readn(cfd, buf, 8, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (dispatch(cfd, peer, code, buf, 8) < 0) goto err;
+        break;
+    case PAROLES_CODEREQ_POST:
+        if (readn(cfd, buf, 10, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        {
+            uint16_t ln = (uint16_t)((buf[8] << 8) | buf[9]);
+            if (ln > MAX_BODY) goto bad;
+            if (readn(cfd, buf + 10, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (dispatch(cfd, peer, code, buf, 10 + ln) < 0) goto err;
+        }
+        break;
+    case PAROLES_CODEREQ_REPLY:
+        if (readn(cfd, buf, 14, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        {
+            uint16_t ln = (uint16_t)((buf[12] << 8) | buf[13]);
+            if (ln > MAX_BODY) goto bad;
+            if (readn(cfd, buf + 14, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+            if (dispatch(cfd, peer, code, buf, 14 + ln) < 0) goto err;
+        }
+        break;
+    case PAROLES_CODEREQ_FEED:
+        if (readn(cfd, buf, 16, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
+        if (dispatch(cfd, peer, code, buf, 16) < 0) goto err;
+        break;
+    default:
+        goto err;
+    }
+    close(cfd);
+    return;
+bad:
+    close(cfd);
+    return;
+err:
+    if (verbose) send_err_msg(cfd, "erreur requete");
+    else
+        send_err(cfd);
+    close(cfd);
+}
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
