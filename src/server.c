@@ -242,6 +242,47 @@ static int handle_reg(int fd, struct sockaddr_in6 *peer, const unsigned char *bo
     vlog("reg user %u nom=%.10s udp=%u\n", u->id, u->nom, u->udp_port);
     return writen(fd, out, (size_t)(p - out));
 }
+
+static int handle_new_group(int fd, uint32_t uid, const unsigned char *body, size_t blen) {
+    User *u = find_user(uid);
+    if (!u) return -1;
+    if (blen < 2) return -1;
+    uint16_t len;
+    const unsigned char *q = body;
+    size_t left = blen;
+    if (wire_get_u16_be(&q, &left, &len) < 0) return -1;
+    if (left < len || len == 0) return -1;
+    int slot = -1;
+    for (int i = 0; i < MAX_GROUPS; i++)
+        if (!groups[i].used) {
+            slot = i;
+            break;
+        }
+    if (slot < 0) return -1;
+    Group *g = &groups[slot];
+    memset(g, 0, sizeof *g);
+    g->used = 1;
+    g->idg = next_gid++;
+    g->name = malloc(len + 1);
+    if (!g->name) return -1;
+    memcpy(g->name, q, len);
+    g->name[len] = 0;
+    g->admin_id = uid;
+    char addrbuf[64];
+    snprintf(addrbuf, sizeof addrbuf, "ff0e::1:%u", g->idg);
+    inet_pton(AF_INET6, addrbuf, &g->mcast_ip);
+    g->mcast_port = (uint16_t)(30000u + (g->idg % 30000u));
+    group_add_member(g, uid);
+    unsigned char out[64];
+    unsigned char *p = out;
+    wire_put_u8(&p, PAROLES_CODEREQ_NEW_GROUP_OK);
+    wire_put_u32_be(&p, g->idg);
+    wire_put_u16_be(&p, g->mcast_port);
+    memcpy(p, &g->mcast_ip, 16);
+    p += 16;
+    vlog("group %u '%s' admin=%u\n", g->idg, g->name, uid);
+    return writen(fd, out, (size_t)(p - out));
+}
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
