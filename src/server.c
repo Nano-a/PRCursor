@@ -436,6 +436,48 @@ static int handle_list_mem(int fd, uint32_t uid, uint32_t idg) {
     }
     return writen(fd, out, (size_t)(p - out));
 }
+
+static int handle_post(int fd, uint32_t uid, const unsigned char *body, size_t blen) {
+    if (blen < 4 + 2) return -1;
+    const unsigned char *q = body;
+    size_t left = blen;
+    uint32_t idg;
+    uint16_t dlen;
+    if (wire_get_u32_be(&q, &left, &idg) < 0) return -1;
+    if (wire_get_u16_be(&q, &left, &dlen) < 0) return -1;
+    if (left < dlen || dlen > MAX_BODY) return -1;
+    Group *g = find_group(idg);
+    if (!g || !group_is_member(g, uid)) return -1;
+    if (g->nposts >= g->cposts) {
+        g->cposts = g->cposts ? g->cposts * 2 : 8;
+        g->posts = realloc(g->posts, g->cposts * sizeof *g->posts);
+    }
+    Post *po = &g->posts[g->nposts++];
+    memset(po, 0, sizeof *po);
+    po->numb = g->next_billet++;
+    po->author = uid;
+    po->len = dlen;
+    po->body = malloc(dlen);
+    if (!po->body) return -1;
+    memcpy(po->body, q, dlen);
+    size_t fisz = sizeof(FeedItem) + dlen;
+    FeedItem *fi = malloc(fisz);
+    if (!fi) return -1;
+    fi->is_reply = 0;
+    fi->author = uid;
+    fi->numb = po->numb;
+    fi->numr = 0;
+    fi->len = dlen;
+    memcpy(fi->data, q, dlen);
+    feed_push(g, fi);
+    unsigned char out[32];
+    unsigned char *p = out;
+    wire_put_u8(&p, PAROLES_CODEREQ_POST_OK);
+    wire_put_u32_be(&p, idg);
+    wire_put_u32_be(&p, po->numb);
+    notif_mcast(g, PAROLES_NOTIF_NEW_MSG);
+    return writen(fd, out, (size_t)(p - out));
+}
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
