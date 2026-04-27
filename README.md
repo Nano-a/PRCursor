@@ -27,10 +27,10 @@ Terminal 2 :
 
 ## TLS + auth (étapes 2–3)
 
-Serveur (certificats générés par `tests/fixtures/certs/gen.sh` ou équivalent) :
+Serveur (certificat + clé TLS seulement ; la CA sert au **client**) :
 
 ```bash
-./paroles_server --tls server.pem server.key ca.pem :: 4242 --signing-key srv_priv.pem
+./paroles_server --tls server.pem server.key :: 4242 --signing-key srv_priv.pem
 ```
 
 Client après inscription : même connexion TLS, message AUTH (0) puis commande métier ; clés utilisateur PEM :
@@ -43,6 +43,8 @@ Voir `paroles_client` / `paroles_server` sans arguments pour les options (`--ver
 
 ## Documentation (CHRONO 66–68)
 
+- [`docs/GIT_ARBRE.md`](docs/GIT_ARBRE.md) — **graphe d’historique** identique à `git log --graph --all` (la page *Network* GitHub ne le reproduit pas à l’identique)  
+- [`docs/VERIFICATION_TESTS.md`](docs/VERIFICATION_TESTS.md) — **comment lancer et interpréter les tests** (terminaux, commandes, TLS/auth)  
 - [`docs/SOUTENANCE.md`](docs/SOUTENANCE.md) — démo et relecture finale  
 - [`docs/GIT_EQUIPE.md`](docs/GIT_EQUIPE.md) — historique visible pour chaque membre  
 - [`docs/HOTFIX.md`](docs/HOTFIX.md) — procédure `hotfix/*` depuis `main`
