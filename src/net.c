@@ -64,6 +64,7 @@ int writen(int fd, const void *buf, size_t n) {
     return 0;
 }
 
+/* N°40 — erreurs lecture / fin de connexion */
 int readn(int fd, void *buf, size_t n, int timeout_ms) {
     unsigned char *p = buf;
     size_t left = n;
