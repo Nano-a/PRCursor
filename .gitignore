@@ -13,6 +13,8 @@ test_*
 # Certificats générés (scripts/gencerts.sh)
 tests/fixtures/certs/
 tests/fixtures/ed25519/
+tests/fixtures/ed25519_u/
+tests/fixtures/ed25519_srv/
 
 # Éditeurs / OS
 *~

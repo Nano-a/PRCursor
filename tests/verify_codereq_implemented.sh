@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CHRONO N°47 — vérif statique : CODEREQ 1–17, 24, 31 ; pas de CODEREQ 0 (étape 3)
+# CHRONO N°47 — vérif statique : CODEREQ 0–17, 24–25, 31 (étape 3 inclut AUTH)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -8,6 +8,8 @@ SRV=src/server.c
 
 fail() { echo "ECHEC N°47: $*" >&2; exit 1; }
 
+grep -qE '^#define PAROLES_CODEREQ_AUTH[[:space:]]+0$' "$HDR" || fail "AUTH 0"
+grep -qE '^#define PAROLES_CODEREQ_AUTH_OK[[:space:]]+25$' "$HDR" || fail "AUTH_OK 25"
 grep -qE '^#define PAROLES_CODEREQ_REG[[:space:]]+1$' "$HDR" || fail "REG 1"
 grep -qE '^#define PAROLES_CODEREQ_REG_OK[[:space:]]+2$' "$HDR" || fail "REG_OK 2"
 grep -qE '^#define PAROLES_CODEREQ_NEW_GROUP[[:space:]]+3$' "$HDR" || fail "NEW_GROUP 3"
@@ -30,11 +32,14 @@ grep -qE '^#define PAROLES_CODEREQ_ERR[[:space:]]+31$' "$HDR" || fail "ERR 31"
 
 while read -r a name val _; do
   [[ "$a" == "#define" && "$name" == PAROLES_CODEREQ_* ]] || continue
-  [[ "$val" == "0" ]] && fail "CODEREQ $name = 0 interdit en étape 1 (réservé étape 3)"
+  [[ "$name" == "PAROLES_CODEREQ_AUTH" ]] && continue
+  [[ "$val" == "0" ]] && fail "CODEREQ $name = 0 inattendu (seul AUTH peut être 0)"
 done < "$HDR"
 
 for sym in REG NEW_GROUP INVITE LIST_INV INV_ANS LIST_MEM POST REPLY FEED; do
-  grep -q "case PAROLES_CODEREQ_${sym}:" "$SRV" || fail "serve_client gère $sym"
+  grep -q "case PAROLES_CODEREQ_${sym}:" "$SRV" || fail "serve_business_switch gère $sym"
 done
+
+grep -q "do_client_auth" "$SRV" || fail "serveur gère handshake AUTH (do_client_auth)"
 
 echo "verify_codereq_implemented OK (N°47)"

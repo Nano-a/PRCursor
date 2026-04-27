@@ -1,4 +1,5 @@
 #include "../include/paroles_proto.h"
+#include "../include/auth_ed25519.h"
 #include "../include/tls_io.h"
 #include "net.h"
 #include "wire.h"
@@ -6,11 +7,13 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <openssl/evp.h>
 #include <string.h>
 #include <unistd.h>
 
 static int verbose;
 static SSL *g_io_ssl;
+static EVP_PKEY *g_srv_sign_key;
 
 static void vlog(const char *fmt, ...) {
     if (!verbose) return;
@@ -30,6 +33,7 @@ typedef struct {
     uint32_t id;
     char nom[PAROLES_NOM_LEN];
     uint8_t cle[PAROLES_CLE_LEN];
+    uint32_t auth_nonce;
     uint16_t udp_port;
     struct sockaddr_in6 reg_addr;
 } User;
@@ -87,11 +91,13 @@ static Group *find_group(uint32_t idg) {
     return NULL;
 }
 
+#ifndef PAROLES_ACCEPT_REAL_CLE_113
 static int cle_is_zero(const uint8_t *c) {
     for (int i = 0; i < PAROLES_CLE_LEN; i++)
         if (c[i]) return 0;
     return 1;
 }
+#endif
 
 static void send_err(int fd) {
     unsigned char b[1 + PAROLES_ERR_TAIL];
@@ -591,8 +597,84 @@ static int handle_feed(int fd, uint32_t uid, const unsigned char *body, size_t b
     return r;
 }
 
+static int do_client_auth(int cfd, uint32_t *aid, uint32_t *anum) {
+    /* Un seul read après CODEREQ=0 : évite blocages SSL_read fragmentés. */
+    unsigned char h[4 + 4 + 2 + PAROLES_ED25519_SIG_LEN];
+    if (conn_readn(g_io_ssl, cfd, h, sizeof h, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+    const unsigned char *q = h;
+    size_t le = sizeof h;
+    uint32_t id, num;
+    uint16_t lsig;
+    if (wire_get_u32_be(&q, &le, &id) < 0) return -1;
+    if (wire_get_u32_be(&q, &le, &num) < 0) return -1;
+    if (wire_get_u16_be(&q, &le, &lsig) < 0) return -1;
+    if (lsig != PAROLES_ED25519_SIG_LEN || le < PAROLES_ED25519_SIG_LEN) return -1;
+    const unsigned char *sig = q;
+    User *u = find_user(id);
+    if (!u) {
+        vlog("auth: utilisateur %u inconnu\n", id);
+        return -1;
+    }
+    if (num != u->auth_nonce) {
+        vlog("auth: NUM %u != attendu %u (id=%u)\n", num, u->auth_nonce, id);
+        return -1;
+    }
+    unsigned char tbs[9];
+    unsigned char *p = tbs;
+    wire_put_u8(&p, PAROLES_CODEREQ_AUTH);
+    wire_put_u32_be(&p, id);
+    wire_put_u32_be(&p, num);
+    EVP_PKEY *pk = paroles_ed25519_pubkey_from_cle(u->cle);
+    if (!pk) return -1;
+    int ok = paroles_ed25519_verify(pk, tbs, 9, sig, PAROLES_ED25519_SIG_LEN);
+    EVP_PKEY_free(pk);
+    if (ok < 0) {
+        vlog("auth: signature ED25519 invalide (id=%u num=%u)\n", id, num);
+        return -1;
+    }
+    u->auth_nonce++;
+    *aid = id;
+    *anum = num;
+    return 0;
+}
+
+static int send_auth_ok(int cfd, uint32_t id, uint32_t num) {
+    unsigned char tbs[9];
+    unsigned char *p = tbs;
+    wire_put_u8(&p, PAROLES_CODEREQ_AUTH_OK);
+    wire_put_u32_be(&p, id);
+    wire_put_u32_be(&p, num);
+    unsigned char sig[128];
+    size_t slen = sizeof sig;
+    if (paroles_ed25519_sign(g_srv_sign_key, tbs, 9, sig, &slen) < 0) {
+        vlog("send_auth_ok: paroles_ed25519_sign a échoué\n");
+        return -1;
+    }
+    if (slen != PAROLES_ED25519_SIG_LEN) {
+        vlog("send_auth_ok: longueur signature %zu\n", slen);
+        return -1;
+    }
+    unsigned char out[128];
+    p = out;
+    wire_put_u8(&p, PAROLES_CODEREQ_AUTH_OK);
+    wire_put_u32_be(&p, id);
+    wire_put_u32_be(&p, num);
+    wire_put_u16_be(&p, (uint16_t)slen);
+    memcpy(p, sig, slen);
+    p += slen;
+    return conn_writen(g_io_ssl, cfd, out, (size_t)(p - out));
+}
+
 static int dispatch(int fd, struct sockaddr_in6 *peer, uint8_t code, const unsigned char *body,
-                    size_t blen) {
+                    size_t blen, uint32_t sess_uid) {
+    if (sess_uid && code != PAROLES_CODEREQ_REG) {
+        if (blen < 4) return -1;
+        const unsigned char *q = body;
+        size_t left = blen;
+        uint32_t wire_uid;
+        if (wire_get_u32_be(&q, &left, &wire_uid) < 0) return -1;
+        if (wire_uid != sess_uid) return -1;
+    }
     switch (code) {
     case PAROLES_CODEREQ_REG:
         return handle_reg(fd, peer, body, blen);
@@ -675,6 +757,62 @@ static int dispatch(int fd, struct sockaddr_in6 *peer, uint8_t code, const unsig
     }
 }
 
+static int serve_business_switch(int cfd, struct sockaddr_in6 *peer, uint8_t code, uint32_t sess_uid) {
+    unsigned char buf[256 * 1024];
+    switch (code) {
+    case PAROLES_CODEREQ_REG:
+        return -1;
+    case PAROLES_CODEREQ_NEW_GROUP:
+        if (conn_readn(g_io_ssl, cfd, buf, 6, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        {
+            uint16_t ln = (uint16_t)((buf[4] << 8) | buf[5]);
+            if (ln > MAX_BODY) return -1;
+            if (conn_readn(g_io_ssl, cfd, buf + 6, ln, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+            return dispatch(cfd, peer, code, buf, 6 + ln, sess_uid);
+        }
+    case PAROLES_CODEREQ_INVITE:
+        if (conn_readn(g_io_ssl, cfd, buf, 12, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        {
+            uint32_t nb = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
+                          ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
+            if (nb > 8192) return -1;
+            if (nb > 0 && conn_readn(g_io_ssl, cfd, buf + 12, nb * 8u, PAROLES_TCP_TIMEOUT_MS) < 0)
+                return -1;
+            return dispatch(cfd, peer, code, buf, 12 + nb * 8u, sess_uid);
+        }
+    case PAROLES_CODEREQ_LIST_INV:
+        if (conn_readn(g_io_ssl, cfd, buf, 4, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        return dispatch(cfd, peer, code, buf, 4, sess_uid);
+    case PAROLES_CODEREQ_INV_ANS:
+        if (conn_readn(g_io_ssl, cfd, buf, 9, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        return dispatch(cfd, peer, code, buf, 9, sess_uid);
+    case PAROLES_CODEREQ_LIST_MEM:
+        if (conn_readn(g_io_ssl, cfd, buf, 8, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        return dispatch(cfd, peer, code, buf, 8, sess_uid);
+    case PAROLES_CODEREQ_POST:
+        if (conn_readn(g_io_ssl, cfd, buf, 10, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        {
+            uint16_t ln = (uint16_t)((buf[8] << 8) | buf[9]);
+            if (ln > MAX_BODY) return -1;
+            if (conn_readn(g_io_ssl, cfd, buf + 10, ln, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+            return dispatch(cfd, peer, code, buf, 10 + ln, sess_uid);
+        }
+    case PAROLES_CODEREQ_REPLY:
+        if (conn_readn(g_io_ssl, cfd, buf, 14, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        {
+            uint16_t ln = (uint16_t)((buf[12] << 8) | buf[13]);
+            if (ln > MAX_BODY) return -1;
+            if (conn_readn(g_io_ssl, cfd, buf + 14, ln, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+            return dispatch(cfd, peer, code, buf, 14 + ln, sess_uid);
+        }
+    case PAROLES_CODEREQ_FEED:
+        if (conn_readn(g_io_ssl, cfd, buf, 16, PAROLES_TCP_TIMEOUT_MS) < 0) return -1;
+        return dispatch(cfd, peer, code, buf, 16, sess_uid);
+    default:
+        return -1;
+    }
+}
+
 static void serve_client(int cfd, struct sockaddr_in6 *peer, SSL_CTX *tls_ctx) {
     SSL *ssl = NULL;
     if (tls_ctx) {
@@ -693,70 +831,30 @@ static void serve_client(int cfd, struct sockaddr_in6 *peer, SSL_CTX *tls_ctx) {
     g_io_ssl = ssl;
 
     unsigned char hdr[1];
+    unsigned char buf[256 * 1024];
     if (conn_readn(g_io_ssl, cfd, hdr, 1, PAROLES_TCP_TIMEOUT_MS) < 0) goto end;
     uint8_t code = hdr[0];
-    unsigned char buf[256 * 1024];
-    switch (code) {
-    case PAROLES_CODEREQ_REG:
-        if (conn_readn(g_io_ssl, cfd, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        if (dispatch(cfd, peer, code, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN) < 0) goto err;
-        break;
-    case PAROLES_CODEREQ_NEW_GROUP:
-        if (conn_readn(g_io_ssl, cfd, buf, 6, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        {
-            uint16_t ln = (uint16_t)((buf[4] << 8) | buf[5]);
-            if (ln > MAX_BODY) goto bad;
-            if (conn_readn(g_io_ssl, cfd, buf + 6, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-            if (dispatch(cfd, peer, code, buf, 6 + ln) < 0) goto err;
-        }
-        break;
-    case PAROLES_CODEREQ_INVITE:
-        if (conn_readn(g_io_ssl, cfd, buf, 12, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        {
-            uint32_t nb = ((uint32_t)buf[8] << 24) | ((uint32_t)buf[9] << 16) |
-                          ((uint32_t)buf[10] << 8) | (uint32_t)buf[11];
-            if (nb > 8192) goto bad;
-            if (nb > 0 && conn_readn(g_io_ssl, cfd, buf + 12, nb * 8u, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-            if (dispatch(cfd, peer, code, buf, 12 + nb * 8u) < 0) goto err;
-        }
-        break;
-    case PAROLES_CODEREQ_LIST_INV:
-        if (conn_readn(g_io_ssl, cfd, buf, 4, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        if (dispatch(cfd, peer, code, buf, 4) < 0) goto err;
-        break;
-    case PAROLES_CODEREQ_INV_ANS:
-        if (conn_readn(g_io_ssl, cfd, buf, 9, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        if (dispatch(cfd, peer, code, buf, 9) < 0) goto err;
-        break;
-    case PAROLES_CODEREQ_LIST_MEM:
-        if (conn_readn(g_io_ssl, cfd, buf, 8, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        if (dispatch(cfd, peer, code, buf, 8) < 0) goto err;
-        break;
-    case PAROLES_CODEREQ_POST:
-        if (conn_readn(g_io_ssl, cfd, buf, 10, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        {
-            uint16_t ln = (uint16_t)((buf[8] << 8) | buf[9]);
-            if (ln > MAX_BODY) goto bad;
-            if (conn_readn(g_io_ssl, cfd, buf + 10, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-            if (dispatch(cfd, peer, code, buf, 10 + ln) < 0) goto err;
-        }
-        break;
-    case PAROLES_CODEREQ_REPLY:
-        if (conn_readn(g_io_ssl, cfd, buf, 14, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        {
-            uint16_t ln = (uint16_t)((buf[12] << 8) | buf[13]);
-            if (ln > MAX_BODY) goto bad;
-            if (conn_readn(g_io_ssl, cfd, buf + 14, ln, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-            if (dispatch(cfd, peer, code, buf, 14 + ln) < 0) goto err;
-        }
-        break;
-    case PAROLES_CODEREQ_FEED:
-        if (conn_readn(g_io_ssl, cfd, buf, 16, PAROLES_TCP_TIMEOUT_MS) < 0) goto bad;
-        if (dispatch(cfd, peer, code, buf, 16) < 0) goto err;
-        break;
-    default:
-        goto err;
+    uint32_t sess_uid = 0;
+
+    if (code == PAROLES_CODEREQ_REG) {
+        if (conn_readn(g_io_ssl, cfd, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN, PAROLES_TCP_TIMEOUT_MS) < 0)
+            goto bad;
+        if (dispatch(cfd, peer, code, buf, PAROLES_NOM_LEN + PAROLES_CLE_LEN, 0) < 0) goto err;
+        goto end;
     }
+
+    if (g_srv_sign_key) {
+        if (code != PAROLES_CODEREQ_AUTH) goto err;
+        uint32_t aid, anum;
+        if (do_client_auth(cfd, &aid, &anum) < 0) goto err;
+        if (send_auth_ok(cfd, aid, anum) < 0) goto err;
+        sess_uid = aid;
+        if (conn_readn(g_io_ssl, cfd, hdr, 1, PAROLES_TCP_TIMEOUT_MS) < 0) goto end;
+        code = hdr[0];
+        if (code == PAROLES_CODEREQ_REG) goto err;
+    }
+
+    if (serve_business_switch(cfd, peer, code, sess_uid) < 0) goto err;
     goto end;
 bad:
     goto end;
@@ -790,9 +888,20 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    if (argc - pi >= 2 && strcmp(argv[pi], "--signing-key") == 0) {
+        g_srv_sign_key = paroles_load_ed25519_private_pem(argv[pi + 1]);
+        if (!g_srv_sign_key) {
+            fprintf(stderr, "paroles_server: clé ED25519 serveur (--signing-key) invalide\n");
+            paroles_tls_ctx_free(tls_ctx);
+            return 1;
+        }
+        pi += 2;
+    }
     if (argc - pi < 2) {
         fprintf(stderr,
-                "usage: paroles_server [-v] [--tls cert.pem key.pem] bind_ipv6 port\n");
+                "usage: paroles_server [-v] [--tls cert.pem key.pem] [--signing-key priv.pem] "
+                "bind_ipv6 port\n");
+        EVP_PKEY_free(g_srv_sign_key);
         paroles_tls_ctx_free(tls_ctx);
         return 1;
     }
@@ -800,17 +909,19 @@ int main(int argc, char **argv) {
     uint16_t port = (uint16_t)atoi(argv[pi + 1]);
     if (strcmp(host, "-v") == 0) {
         fprintf(stderr, "usage error\n");
+        EVP_PKEY_free(g_srv_sign_key);
         paroles_tls_ctx_free(tls_ctx);
         return 1;
     }
     int srv = tcp6_listen(host, port);
     if (srv < 0) {
         perror("listen");
+        EVP_PKEY_free(g_srv_sign_key);
         paroles_tls_ctx_free(tls_ctx);
         return 1;
     }
-    fprintf(stderr, "paroles_server ecoute [%s]:%u%s\n", host, (unsigned)port,
-            tls_ctx ? " (TLS)" : "");
+    fprintf(stderr, "paroles_server ecoute [%s]:%u%s%s\n", host, (unsigned)port,
+            tls_ctx ? " (TLS)" : "", g_srv_sign_key ? " +auth" : "");
     for (;;) {
         struct sockaddr_in6 peer;
         socklen_t pl = sizeof peer;
