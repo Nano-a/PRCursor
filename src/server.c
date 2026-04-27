@@ -91,6 +91,7 @@ static int cle_is_zero(const uint8_t *c) {
     return 1;
 }
 
+/* N°37 — rejets : erreurs métier → CODEREQ 31 */
 static void send_err(int fd) {
     unsigned char b[1 + PAROLES_ERR_TAIL];
     memset(b, 0, sizeof b);
