@@ -1,0 +1,7 @@
+*.o
+paroles_server
+paroles_client
+paroles_smoke
+test_feed_order
+*.swp
+.DS_Store
