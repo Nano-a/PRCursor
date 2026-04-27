@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 
+/* N°42 — mode verbeux : paroles_client -v … */
 static int verbose;
 
 static void pad_nom(unsigned char *dst, const char *src) {
