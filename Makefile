@@ -17,7 +17,8 @@ clean:
 	rm -f $(SRC)/*.o $(BIN)
 
 test: all
-	@chmod +x tests/smoke.sh tests/regression_codereq.sh
+	@chmod +x tests/smoke.sh tests/regression_codereq.sh tests/verify_codereq_implemented.sh
+	@tests/verify_codereq_implemented.sh
 	@PORT=4242 tests/smoke.sh
 	@PORT=4245 tests/regression_codereq.sh
 
