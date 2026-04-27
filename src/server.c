@@ -478,6 +478,52 @@ static int handle_post(int fd, uint32_t uid, const unsigned char *body, size_t b
     notif_mcast(g, PAROLES_NOTIF_NEW_MSG);
     return writen(fd, out, (size_t)(p - out));
 }
+
+static int handle_reply(int fd, uint32_t uid, const unsigned char *body, size_t blen) {
+    if (blen < 4 + 4 + 2) return -1;
+    const unsigned char *q = body;
+    size_t left = blen;
+    uint32_t idg, numb;
+    uint16_t dlen;
+    if (wire_get_u32_be(&q, &left, &idg) < 0) return -1;
+    if (wire_get_u32_be(&q, &left, &numb) < 0) return -1;
+    if (wire_get_u16_be(&q, &left, &dlen) < 0) return -1;
+    if (left < dlen || dlen > MAX_BODY) return -1;
+    Group *g = find_group(idg);
+    if (!g || !group_is_member(g, uid)) return -1;
+    Post *po = find_post(g, numb);
+    if (!po) return -1;
+    po->next_reply++;
+    uint32_t numr = po->next_reply;
+    size_t fisz = sizeof(FeedItem) + dlen;
+    FeedItem *fi = malloc(fisz);
+    if (!fi) return -1;
+    fi->is_reply = 1;
+    fi->author = uid;
+    fi->numb = numb;
+    fi->numr = numr;
+    fi->len = dlen;
+    memcpy(fi->data, q, dlen);
+    feed_push(g, fi);
+    unsigned char out[32];
+    unsigned char *p = out;
+    wire_put_u8(&p, PAROLES_CODEREQ_REPLY_OK);
+    wire_put_u32_be(&p, idg);
+    wire_put_u32_be(&p, numb);
+    wire_put_u32_be(&p, numr);
+    notif_mcast(g, PAROLES_NOTIF_NEW_MSG);
+    User *auth = find_user(po->author);
+    if (auth && auth->id != uid) notif_udp_user(auth, PAROLES_NOTIF_FETCH, idg);
+    return writen(fd, out, (size_t)(p - out));
+}
+
+static ssize_t feed_index_after(Group *g, uint32_t numb, uint32_t numr) {
+    for (size_t i = 0; i < g->nfeed; i++) {
+        FeedItem *fi = g->feed[i];
+        if (fi->numb == numb && fi->numr == numr) return (ssize_t)i;
+    }
+    return -1;
+}
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
