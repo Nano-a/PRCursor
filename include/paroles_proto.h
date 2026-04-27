@@ -7,6 +7,8 @@
 #define PAROLES_CLE_LEN 113
 #define PAROLES_IP6_BIN 16
 
-/* CHRONO N°11 : étape 1 — CLE 113 octets nuls à l'inscription. */
+/* CHRONO N°12 : conventions — ID (u32), entiers BE, ZEROS. */
+#define PAROLES_CODEREQ_REG 1
+#define PAROLES_CODEREQ_REG_OK 2
 
 #endif
