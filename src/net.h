@@ -19,4 +19,8 @@ int udp6_recv(int fd, void *buf, size_t max, struct sockaddr_in6 *from, int time
 
 int join_mcast(int fd, const struct in6_addr *maddr, unsigned ifindex);
 
+/* Réception notifications (PDF — client sur PORTUDP ou multidiffusion groupe). */
+int udp6_bind_any(uint16_t port);
+int udp6_mcast_recv_socket(const char *mcast_ipv6, uint16_t port);
+
 #endif

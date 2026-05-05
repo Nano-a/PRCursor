@@ -21,3 +21,6 @@ tests/fixtures/ed25519_srv/
 .DS_Store
 .vscode/
 *.swp
+
+# Copie locale facultative du sujet (ne pas versionner)
+projet_PR6.pdf

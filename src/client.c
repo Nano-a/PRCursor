@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* N°42 — mode verbeux : paroles_client -v … */
@@ -451,6 +452,57 @@ static int cmd_feed(const char *host, uint16_t port, uint32_t uid, uint32_t idg,
     return 0;
 }
 
+static void write_notif_line(const unsigned char *buf, int n) {
+    if (n < 6)
+        return;
+    uint16_t code = (uint16_t)(((uint16_t)buf[0] << 8) | buf[1]);
+    uint32_t idg =
+        ((uint32_t)buf[2] << 24) | ((uint32_t)buf[3] << 16) | ((uint32_t)buf[4] << 8) | (uint32_t)buf[5];
+    printf("%u %u\n", (unsigned)code, (unsigned)idg);
+}
+
+static int cmd_listen_udp(uint16_t udp_port, int duration_sec) {
+    if (duration_sec <= 0) duration_sec = 10;
+    int fd = udp6_bind_any(udp_port);
+    if (fd < 0) {
+        perror("listen_udp");
+        return -1;
+    }
+    time_t deadline = time(NULL) + duration_sec;
+    while (time(NULL) < deadline) {
+        unsigned char buf[512];
+        struct sockaddr_in6 from;
+        int left_ms = 1000;
+        time_t left = deadline - time(NULL);
+        if ((time_t)left_ms > left * 1000) left_ms = (int)(left * 1000);
+        int n = udp6_recv(fd, buf, sizeof buf, &from, left_ms > 0 ? left_ms : 1);
+        if (n > 0) write_notif_line(buf, n);
+    }
+    close(fd);
+    return 0;
+}
+
+static int cmd_listen_mcast(const char *mcast_ipv6, uint16_t mcast_port, int duration_sec) {
+    if (duration_sec <= 0) duration_sec = 10;
+    int fd = udp6_mcast_recv_socket(mcast_ipv6, mcast_port);
+    if (fd < 0) {
+        perror("listen_mcast");
+        return -1;
+    }
+    time_t deadline = time(NULL) + duration_sec;
+    while (time(NULL) < deadline) {
+        unsigned char buf[512];
+        struct sockaddr_in6 from;
+        int left_ms = 1000;
+        time_t left = deadline - time(NULL);
+        if ((time_t)left_ms > left * 1000) left_ms = (int)(left * 1000);
+        int n = udp6_recv(fd, buf, sizeof buf, &from, left_ms > 0 ? left_ms : 1);
+        if (n > 0) write_notif_line(buf, n);
+    }
+    close(fd);
+    return 0;
+}
+
 static void usage(void) {
     fprintf(stderr,
             "usage: paroles_client [-v] [--tls ca.pem] [--key priv_ed25519.pem] [--server-pub pub_ed25519.pem] "
@@ -463,7 +515,9 @@ static void usage(void) {
             "  listmem <uid> <idg>\n"
             "  post <uid> <idg> <texte>\n"
             "  reply <uid> <idg> <numb> <texte>\n"
-            "  feed <uid> <idg> <numb> <numr>\n");
+            "  feed <uid> <idg> <numb> <numr>\n"
+            "  listen_udp <port_udp> [sec] — réception notifs CODEREQ (UDP inscription sur PORTUDP)\n"
+            "  listen_mcast <ipv6> <port> [sec] — réception multicast (même codage 6 octets)\n");
 }
 
 static void client_tls_atexit(void) {
@@ -571,6 +625,24 @@ int main(int argc, char **argv) {
                         (uint32_t)atoi(argv[i + 2]), (uint32_t)atoi(argv[i + 3])) < 0
                    ? 1
                    : 0;
+    if (!strcmp(cmd, "listen_udp")) {
+        if (argc - i < 1) {
+            usage();
+            return 1;
+        }
+        uint16_t up = (uint16_t)atoi(argv[i]);
+        int dur = (argc - i >= 2) ? atoi(argv[i + 1]) : 10;
+        return cmd_listen_udp(up, dur) < 0 ? 1 : 0;
+    }
+    if (!strcmp(cmd, "listen_mcast")) {
+        if (argc - i < 2) {
+            usage();
+            return 1;
+        }
+        uint16_t mp = (uint16_t)atoi(argv[i + 1]);
+        int dur = (argc - i >= 3) ? atoi(argv[i + 2]) : 10;
+        return cmd_listen_mcast(argv[i], mp, dur) < 0 ? 1 : 0;
+    }
     usage();
     return 1;
 }
