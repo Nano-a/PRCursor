@@ -1,23 +1,54 @@
-# Tâche 21 — Formats **8**, **9**, **24** : réponse invitation (**AN** 0 / 1 / 2) + **JOIN_OK** ou **ACK**
+# Tâche 21 — CODEREQ **8**, **9**, **24** : réponse invitation (accepter / refuser / quitter)
 
-**CHRONO N°21** | Branche : **`feature/etape1-proto-tcp`** | Qui : **M1, M2**
+**CHRONO N°21** | Branche : **`feature/etape1-proto-tcp`**
 
-## Client → serveur (8)
+*(Le tableau PR6 mentionne aussi la règle **admin quitte → fermeture** en ligne **22** : elle est **déjà implémentée** ici via **`an == 2`** + **`g->admin_id == uid`** → **`close_group`**, comme dans `extrait_server_handle_inv_ans.c`.)*
 
-- **INV_ANS** : **ID** utilisateur, **IDG**, **AN** (1 octet) — accepter (1), refuser (0), ou **quitter** (2) selon contexte.
+## Base
 
-## Serveur → client
+- **Départ** : fichiers complets du dossier **`20/`**.
 
-- **ACK (24)** : refus d’invitation, ou quitter (non-admin), ou fermeture groupe par admin (voir N°22).
-- **JOIN_OK (9)** : acceptation — **IDG**, port/IP multicast, **NB** membres, puis (**ID**, **NOM** 10) × NB (admin en tête dans `PRCursor` car ajouté en premier dans `g->mem`).
+## Fichiers « copier-coller »
 
-## Fichiers extraits (`PRCursor`)
-
-| Fichier | Source |
+| Fichier | Cible |
 |---------|--------|
-| `extrait_client_codereq_8.c` | `src/client.c` — `cmd_ans`. |
-| `extrait_server_handle_inv_ans.c` | `src/server.c` — `handle_inv_ans` (branches 0, 1, 2). |
+| `serveur_complet_etape_programmation_reseaux_chrono_N21.c` | `src/server.c` |
+| `client_complet_etape_programmation_reseaux_chrono_N21.c` | `src/client.c` |
 
-## Vérification
+## Modifications **depuis le dossier 20**
 
-- `ans <uid> <idg> 0` → `OK ack` ; `ans … 1` (invité) → `OK join` ; `ans … 2` (membre quitte) → ack ou fermeture si admin.
+### Serveur
+
+| Élément | Rôle |
+|---------|------|
+| **`group_remove_pending` / `group_remove_member`** | Retrait propre des tableaux **`pend`** / **`mem`**. |
+| **`notif_mcast`** | Paquet UDP **6 octets** vers **`(g->mcast_ip, g->mcast_port)`** (code 16b + idg 32b). |
+| **`close_group`** | **`g->closed = 1`** + notif **CLOSE (21)**. |
+| **`handle_inv_ans`** | **AN=0** : refuse (retire pending, **ACK**). **AN=1** : accepte → **JOIN_OK (9)** + membres + **`notif_mcast(JOIN)`**. **AN=2** : quitte — si **admin** → **`close_group`** + **ACK** ; sinon retire membre + **ACK** + **`notif_mcast(LEAVE)`**. |
+| **`serve_one_codereq`** | Branche **INV_ANS (8)** : lit **UID** (4 o) puis corps **idg (4) + an (1)**. |
+
+### Client
+
+| Élément | Rôle |
+|---------|------|
+| **`cmd_ans`** | Envoie **INV_ANS** ; lit la réponse jusqu’à fin TCP ; **ACK** → `OK ack` ; **JOIN_OK** → `OK join`. |
+| **CLI** | `ans <uid> <idg> <0|1|2>` (**argc = 7**). |
+
+## Exemples
+
+```text
+# Refus
+./paroles_client ::1 P ans 2 1 0
+
+# Acceptation
+./paroles_client ::1 P ans 2 1 1
+
+# Quitter (membre) / fermer (si admin)
+./paroles_client ::1 P ans 1 1 2
+```
+
+## Commit exemple
+
+```
+CHRONO N°21 : INV_ANS (8), JOIN_OK (9), ACK (24) ; notif mcast ; admin quitte close_group
+```

@@ -1,22 +1,38 @@
-# Tâche 20 — Formats **6–7** : liste **invitations en attente** + réponse (IDG, LEN, nom, admin 10 octets)
+# Tâche 20 — Formats **6–7** : liste des invitations en attente
 
-**CHRONO N°20** | Branche : **`feature/etape1-proto-tcp`** | Qui : **M1, M2**
+**CHRONO N°20** | Branche : **`feature/etape1-proto-tcp`**
 
-## Client → serveur (6)
+## Base
 
-- **LIST_INV** + **ID** utilisateur (4 octets BE) — corps après le code lu par `serve_business_switch` selon votre découpage (dans `PRCursor`, corps = 4 octets pour l’UID).
+- **Serveur / client précédents** : fichiers complets du dossier **`19/`**.
 
-## Serveur → client (7)
+## Fichiers « copier-coller » dans `programmation_reseaux`
 
-- **LIST_INV_OK**, **NB** (4 BE), puis pour chaque invitation : **IDG**, **LEN** nom, **nom**, **NOM admin** (10 octets).
+| Fichier dans ce dossier | Cible |
+|-------------------------|--------|
+| `serveur_complet_etape_programmation_reseaux_chrono_N20.c` | `src/server.c` |
+| `client_complet_etape_programmation_reseaux_chrono_N20.c` | `src/client.c` |
 
-## Fichiers extraits (`PRCursor`)
+## Modifications **depuis le dossier 19** (résumé commit)
 
-| Fichier | Source |
-|---------|--------|
-| `extrait_client_codereq_6_7.c` | `src/client.c` — `cmd_listinv`. |
-| `extrait_server_codereq_6_7.c` | `src/server.c` — `handle_list_inv`. |
+| Zone | Changement |
+|------|------------|
+| **`struct Group`** | Champ **`int closed`** (à **0** à la création ; utilisé pleinement en **21** pour masquer les groupes fermés via `find_group`). |
+| **`find_group`** | Ignore les groupes avec **`closed != 0`**. |
+| **Serveur** | **`handle_list_inv`** : construit **LIST_INV_OK (7)** avec **nb** comptée en **deux passes** (placeholder `u32` puis entrées : **idg**, **len**, **nom**, **10 octets admin**), comme `extrait_server_codereq_6_7.c` — **`writen`** à la place de **`conn_writen`**. |
+| **`serve_one_codereq`** | Après **INVITE** : branche **LIST_INV (6)** — lecture de **4 octets UID** puis réponse (corps additionnel **vide** côté client). |
+| **Client** | **`cmd_listinv`** + CLI **`listinv <uid>`** (argc = **5** : `prog host port listinv uid`). Lecture réponse par **boucle `recv`** jusqu’à fermeture TCP (une requête par connexion). |
 
-## Vérification
+## Test rapide
 
-- Utilisateur invité : `listinv` affiche une ligne par groupe en attente avec idg, nom, admin.
+Après **reg** + **newgroup** + **invite** un utilisateur **B** :
+
+```
+./paroles_client ::1 PORT listinv <uid_B>
+```
+
+## Commit exemple
+
+```
+CHRONO N°20 : LIST_INV / LIST_INV_OK (6–7) + flag Group.closed (préparation 21)
+```

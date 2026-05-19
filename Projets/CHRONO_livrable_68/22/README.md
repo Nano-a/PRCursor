@@ -1,19 +1,32 @@
 # Tâche 22 — Règle : **admin quitte** → **fermeture définitive** du groupe
 
-**CHRONO N°22** | Branche : **`feature/etape1-proto-tcp`** | Qui : **M1**
+**CHRONO N°22** | Branche : **`feature/etape1-proto-tcp`**
 
-## Comportement
+## Base
 
-Dans **`handle_inv_ans`**, si **AN = 2** (quitter) et l’utilisateur est **admin** (`g->admin_id == uid`), le serveur appelle **`close_group(g)`** (notif multicast **CLOSE**, groupe marqué fermé) puis envoie **ACK**.
+- **Départ** : snapshot **N°21** (`21/serveur_complet_…_N21.c`, `21/client_…_N21.c`).
+- **Correction** : dans les snapshots **N22+**, le `#endif` du bloc `#ifndef PAROLES_ACCEPT_REAL_CLE_113` est placé **après** tout le code jusqu’à `main` (+ branche `#else` stub si la macro est définie), pour que `serve_one_codereq` voie bien les handlers (évite erreurs « implicit declaration »).
 
-Un membre **non-admin** qui quitte avec AN=2 est simplement retiré du groupe (notif **LEAVE**).
+## Livrables (copier vers `programmation_reseaux`)
 
-## Fichier extrait (`PRCursor`)
-
-| Fichier | Source |
+| Fichier | Cible |
 |---------|--------|
-| `extrait_server_admin_quitte_close.c` | `src/server.c` — branche `an == 2` + admin dans `handle_inv_ans`. |
+| `serveur_complet_etape_programmation_reseaux_chrono_N22.c` | `src/server.c` |
+| `client_complet_etape_programmation_reseaux_chrono_N22.c` | `src/client.c` |
 
-## Vérification
+## Fonctionnalité (déjà alignée avec l’extrait du dossier 22)
 
-- Admin envoie `ans <admin> <idg> 2` → groupe inexistant pour les commandes suivantes ; notif 21 côté sujet.
+Dans **`handle_inv_ans`**, **AN = 2** et **`g->admin_id == uid`** → **`close_group(g)`**, **ACK**. Membre non admin + **AN = 2** → retrait du groupe, **ACK**, notification **LEAVE**.
+
+## Test rapide
+
+```text
+./paroles_client ::1 P ans <admin_uid> <idg> 2
+```
+→ groupe fermé (`find_group` l’ignore) ; multicast **CLOSE** (21).
+
+## Commit exemple
+
+```
+CHRONO N°22 : snapshot étape invitation (INV_ANS) + fermeture si admin quitte ; fix ifndef serveur
+```
