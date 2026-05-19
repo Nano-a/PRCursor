@@ -9,4 +9,5 @@ U1=$(sed -n 's/.*id=\([0-9]*\).*/\1/p' /tmp/pc_u1.txt | head -1)
 U2=$(sed -n 's/.*id=\([0-9]*\).*/\1/p' /tmp/pc_u2.txt | head -1)
 ./paroles_client "$H" "$P" newgroup "$U1" MonGroupe | tee /tmp/pc_g.txt
 IDG=$(sed -n 's/.*idg=\([0-9]*\).*/\1/p' /tmp/pc_g.txt | head -1)
-./paroles_client "$H" "$P" invite "$U1" "$IDG" "$U2"
+./paroles_client "$H" "$P" invite "$U1" "$IDG" 1 "$U2"
+echo "OK invite admin=$U1 idg=$IDG invitee=$U2"

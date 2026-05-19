@@ -7,4 +7,5 @@ P="${PORT:-4242}"
 ./paroles_client "$H" "$P" reg Bob | tee /tmp/pc_u2.txt
 U1=$(sed -n 's/.*id=\([0-9]*\).*/\1/p' /tmp/pc_u1.txt | head -1)
 ./paroles_client "$H" "$P" newgroup "$U1" MonGroupe | tee /tmp/pc_g.txt
-# IDG=$(sed -n 's/.*idg=\([0-9]*\).*/\1/p' /tmp/pc_g.txt | head -1)
+IDG=$(sed -n 's/.*idg=\([0-9]*\).*/\1/p' /tmp/pc_g.txt | head -1)
+echo "OK newgroup UID=$U1 idg=$IDG"
