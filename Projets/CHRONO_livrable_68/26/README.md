@@ -1,24 +1,38 @@
-# Tâche 26 — Formats **16–17** : fil depuis **(n, r)** + ordre de **réception globale**
+# Tâche 26 — Formats **16–17** : **FEED** depuis **(NUMB, NUMR)** et fil global
 
-**CHRONO N°26** | Branche : **`feature/etape1-proto-tcp`** | Qui : **M1, M2**
+**CHRONO N°26** | Branche : **`feature/etape1-proto-tcp`**
 
-## Principe
+## Base
 
-Le serveur maintient un fil **`g->feed`** : enchaînement des **billets** et **réponses** dans l’ordre où ils arrivent. La requête **FEED (16)** précise **IDG**, **NUMB**, **NUMR** : on renvoie tout ce qui suit **après** cette position dans le fil (`feed_index_after` puis boucle `i = from .. nfeed-1`).
+- **Départ** : snapshot **N°25**.
 
-La réponse **FEED_OK (17)** contient **NB** puis pour chaque entrée : auteur, billet, numéro réponse, longueur, texte.
+## Livrables
 
-## Convention `(0, 0)`
+| Fichier | Cible usuelle (`programmation_reseaux`) |
+|---------|----------------------------------------|
+| `serveur_complet_etape_programmation_reseaux_chrono_N26.c` | `src/server.c` |
+| `client_complet_etape_programmation_reseaux_chrono_N26.c` | `src/client.c` |
 
-Point de départ « début du fil » pour récupérer l’historique depuis le début (voir `feed_order_pdf` / sujet).
+## Contenu fonctionnel
 
-## Fichiers extraits (`PRCursor`)
-
-| Fichier | Source |
+| Élément | Détail |
 |---------|--------|
-| `extrait_client_codereq_16_17.c` | `src/client.c` — `cmd_feed`. |
-| `extrait_server_codereq_16_17.c` | `src/server.c` — `feed_index_after` + `handle_feed`. |
+| **`FeedItem`** | Une entrée du fil : **author**, **numb**, **numr**, **len**, **`data`** (copie dynamique). |
+| **`feed_push`** | Appelé depuis **`handle_post`** (**numr = 0** pour le corps du billet) et **`handle_reply`** (texte + **numr** attribué). |
+| **`feed_index_after`** | Première occurrence de **(`numb`, `numr`)** dans le fil. |
+| **Convention `(0, 0)`** | Point de départ **dès le premier** événement : renvoyer la tranche **`i = 0 .. nfeed-1`**. Sinon **`from = index_trouvé + 1`**. |
+| **`handle_feed`** | **MEMBRE** requis → **FEED_OK** (**IDG**, **NB**, puis lignes comme l’extrait). Repositionnement **`msp`** après **realloc** pour patcher **NB**. **NOTIF_FETCH** vers auteur billet comme l’extrait. |
+| **Client** | **`feed <uid> <idg> <numb> <numr>`** (`argc == 8`) ; corps **FEED** = **UID + IDG + NUMB + NUMR** (**16 octets** après code). Lecture réponse jusqu’à fin TCP (**`recv` en boucle**). |
 
-## Vérification
+## Test rapide
 
-- `tests/feed_order_pdf.sh` et scénario PDF (ordre b2, b3, réponse b1, etc.).
+```text
+# Après inscription + groupe + post(s)/reply(s), historique depuis le début :
+./paroles_client ::1 P feed 1 1 0 0
+```
+
+## Commit exemple
+
+```
+CHRONO N°26 : FEED (16) / FEED_OK (17), fil chronologique + anchor (0,0)
+```

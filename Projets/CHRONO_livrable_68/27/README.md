@@ -1,30 +1,34 @@
-# Tâche 27 — Fonctionnel : **inscription**
+# Tâche 27 — Fonctionnel : **inscription** (`reg` → **REG_OK**)
 
-**CHRONO N°27** | Branche : **`feature/etape1-proto-tcp`** | Qui : **M1, M2**
+**CHRONO N°27** | Branche : **`feature/etape1-proto-tcp`**
 
-## Objectif
+## Base
 
-Un client peut s’**inscrire** : envoi **REG**, réception **REG_OK** avec **ID** et **port UDP** (et CLE selon étape).
+Le **code exécutable** est le **même snapshot que le CHRONO N°26** (pile déjà disponible jusqu’aux **LIST_MEM**, posts, replies, feed). Ce numéro sert à **tracabiliser la consigne inscription** (**tâches 11–13–14**) et les **tests**.
 
-## Référence code (détail des messages)
+## Livrables (dossier `/27/`)
 
-Tâches **N°13–14** (formats 1–2) et **N°11** (CLE nulle étape 1).
+| Fichier | Rôle |
+|---------|------|
+| `serveur_complet_etape_programmation_reseaux_chrono_N27.c` | Copie **alignée sur N°26** (entête différent uniquement si besoin). |
+| `client_complet_etape_programmation_reseaux_chrono_N27.c` | Idem — **`cmd_reg`** déjà présent (**CLE** nulle étape 1). |
+| **`extrait_scenario_reg.sh`** | Scénario minimal : `./paroles_client … reg Alice` puis **Bob**. |
 
-## Fichier extrait — scénario de test
+Pour un dépôt de code unique, utilise plutôt **N°26** dans `src/` ; **N°27** sert au **parcours README + script**.
 
-| Fichier | Source |
-|---------|--------|
-| `extrait_scenario_reg.sh` | Adapté de `PRCursor/tests/smoke.sh` (inscriptions). |
-
-## Vérification manuelle
+## Test manuel (cf. fichier extrait)
 
 ```bash
-# Terminal 1 : serveur
-./paroles_server ::1 4242
-
-# Terminal 2
-./paroles_client ::1 4242 reg Alice
-# Attendu : OK id=1 udp=...
+PORT=4242 ./paroles_server ::1 "$PORT"
+# autre terminal
+./paroles_client ::1 "$PORT" reg Alice
+# Attendu : OK id=1 udp=…
 ```
 
-Automatique : `PORT=4242 tests/smoke.sh` (début du script).
+Ou : `chmod +x extrait_scenario_reg.sh && PORT=4242 ./extrait_scenario_reg.sh` (avec binaires sur le `$PATH` courant ou adapter les chemins).
+
+## Commit exemple
+
+```
+CHRONO N°27 : scénario inscription (REG déjà présent dans snapshot N°26)
+```

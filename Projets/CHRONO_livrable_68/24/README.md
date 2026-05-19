@@ -1,26 +1,36 @@
-# Tâche 24 — Formats **12–13** : **post** + réponse **NUMB** ; billets **à partir de 0** par groupe
+# Tâche 24 — Formats **12–13** : **post** + réponse **NUMB** (billets à partir de **0**)
 
-**CHRONO N°24** | Branche : **`feature/etape1-proto-tcp`** | Qui : **M1, M2**
+**CHRONO N°24** | Branche : **`feature/etape1-proto-tcp`**
 
-## Client → serveur (12)
+## Base
 
-- **POST** : **ID**, **IDG**, **LEN**, **données** texte.
+- **Départ** : snapshot **N°23** (`/serveur_…_N23.c`, `/client_…_N23.c`).
 
-## Serveur → client (13)
+## Livrables (dans ce dossier, copie vers `programmation_reseaux/src/` si besoin)
 
-- **POST_OK** : **IDG**, **NUMB** (numéro du billet).
+| Fichier | Cible usuelle |
+|---------|----------------|
+| `serveur_complet_etape_programmation_reseaux_chrono_N24.c` | `src/server.c` |
+| `client_complet_etape_programmation_reseaux_chrono_N24.c` | `src/client.c` |
 
-## Numérotation
+## Modifications depuis N°23
 
-Nouveau billet : **`po->numb = g->next_billet++`** ; compteur par groupe, premier billet **0**.
-
-## Fichiers extraits (`PRCursor`)
-
-| Fichier | Source |
+| Élément | Détail |
 |---------|--------|
-| `extrait_client_codereq_12_13.c` | `src/client.c` — `cmd_post`. |
-| `extrait_server_codereq_12_13.c` | `src/server.c` — `handle_post` (création billet + réponse). |
+| **`Post` / `Group`** | Tableau **`posts[MAX_POSTS_PER_GROUP]`**, **`nposts`**, **`next_billet`** : chaque nouveau billet **`numb = g->next_billet++`** après assignation (premier billet **0**). |
+| **Serveur** | **`handle_post`** : membre du groupe, copie du corps (`malloc`), **POST_OK (13)** + **IDG** + **NUMB**, **`notif_mcast(NEW_MSG)`**. |
+| **Serveur** | **`serve_one_codereq`** : **POST (12)**, corps **UID (4) + IDG (4) + LEN (2)** + données (**LEN** ≤ **`PAROLES_MAX_BODY`**). |
+| **Client** | **`cmd_post`** + ligne de commande **`post <uid> <idg> texte [mots …]`** (**argc ≥ 7** ; texte = reste d’`argv` concaténé avec des espaces). |
 
-## Vérification
+## Test rapide
 
-- Premier `post` sur un groupe → `OK billet numb=0`, puis 1, 2, …
+```text
+./paroles_client ::1 P post 1 1 Bonjour
+→ OK billet numb=0
+```
+
+## Commit exemple
+
+```
+CHRONO N°24 : POST (12) et POST_OK (13), numérotation billets par groupe
+```
